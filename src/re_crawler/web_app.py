@@ -237,6 +237,8 @@ def _fmt_ratio(v) -> str | None:
     n = _to_float_safe(v)
     if n is None:
         return None
+    if abs(n) < 1e-9:
+        return "0%"
     if abs(n - round(n)) < 1e-9:
         return f"{int(round(n)):+d}%"
     return f"{n:+.1f}%"

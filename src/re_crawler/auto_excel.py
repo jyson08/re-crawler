@@ -752,7 +752,9 @@ def _calc_lease_ratio(lease_price: int | None, sale_price: int | None) -> float 
 
 
 def _calc_undervalue_ratio(recent_sale_price: int | None, kb_sale_price: int | None) -> float | None:
-    if recent_sale_price is None or kb_sale_price in (None, 0):
+    if recent_sale_price is None:
+        return 0.0
+    if kb_sale_price in (None, 0):
         return None
     return round(((recent_sale_price / kb_sale_price) * 100.0) - 100.0, 1)
 
