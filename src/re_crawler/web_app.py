@@ -177,6 +177,8 @@ def main() -> None:
 
     with st.sidebar:
         st.subheader("수집 옵션")
+        dong = st.text_input("동(읍/면/동)", value="")
+        st.caption("동명이인 단지가 많으면 동명을 먼저 입력하세요. 예: 응암동")
         query = st.text_input("단지명", value="백련산SK뷰아이파크")
         radius_m = st.number_input("반경(m)", min_value=100, max_value=5000, value=500, step=100)
         min_households = st.number_input("최소 세대수", min_value=1, max_value=10000, value=290, step=10)
@@ -231,6 +233,7 @@ def main() -> None:
                     fast_mode=True,
                     max_dong_codes=8,
                     index_items=index_items,
+                    preferred_dong=(dong.strip() if dong.strip() else None),
                 )
             except ValueError as exc:
                 progress_bar.empty()

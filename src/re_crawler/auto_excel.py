@@ -288,6 +288,7 @@ def fetch_kb_complex_candidates(
     query: str,
     top_n: int = 10,
     index_items: list[dict[str, Any]] | None = None,
+    preferred_dong: str | None = None,
 ) -> list[KbComplexCandidate]:
     items = index_items if index_items is not None else fetch_kb_complex_index(session)
     if not items:
@@ -304,6 +305,13 @@ def fetch_kb_complex_candidates(
             continue
 
         score = _similarity_score(query, name)
+        if preferred_dong:
+            addr_text = str(address or "")
+            if preferred_dong in addr_text:
+                score += 12.0
+            elif score < 60:
+                # 동 정보가 불일치하고 유사도도 낮으면 제외
+                continue
         if score < 15:
             continue
         candidates.append(
@@ -411,11 +419,11 @@ def _extract_sido_sigungu(addr: str | None) -> tuple[str | None, str | None]:
     return sido, sigungu
 
 
-def fetch_kb_dong_codes_in_region(
+def fetch_kb_dong_rows_in_region(
     session: requests.Session,
     sido_name: str,
     sigungu_name: str | None,
-) -> list[str]:
+) -> list[dict[str, Any]]:
     params: dict[str, str] = {"시도명": sido_name}
     if sigungu_name:
         params["시군구명"] = sigungu_name
@@ -430,14 +438,24 @@ def fetch_kb_dong_codes_in_region(
     rows = payload.get("dataBody", {}).get("data", [])
     if not isinstance(rows, list):
         return []
-    codes: list[str] = []
+    out_rows: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict):
             continue
         code = str(row.get("법정동코드") or "").strip()
-        if code:
-            codes.append(code)
-    return codes
+        lat = _to_float(row.get("wgs84중심위도"))
+        lng = _to_float(row.get("wgs84중심경도"))
+        if not code:
+            continue
+        out_rows.append(
+            {
+                "code": code,
+                "name": str(row.get("법정동명") or "").strip(),
+                "lat": lat,
+                "lng": lng,
+            }
+        )
+    return out_rows
 
 
 def fetch_kb_nearby_apartment_candidates(
@@ -463,20 +481,48 @@ def fetch_kb_nearby_apartment_candidates(
         or str(seed_main.get("도로기본주소") or "").strip()
     )
     sido_name, sigungu_name = _extract_sido_sigungu(seed_addr)
-    dong_codes: list[str] = []
+    dong_rows: list[dict[str, Any]] = []
     if sido_name:
-        dong_codes = fetch_kb_dong_codes_in_region(
+        dong_rows = fetch_kb_dong_rows_in_region(
             session=session,
             sido_name=sido_name,
             sigungu_name=sigungu_name,
         )
+    dong_codes: list[str] = []
+    if dong_rows:
+        # 인접 동 포함: 동 중심좌표 기준으로 시드와 가까운 순으로 선택
+        prox_rows: list[tuple[float, str]] = []
+        for r in dong_rows:
+            lat = r.get("lat")
+            lng = r.get("lng")
+            code = str(r.get("code") or "").strip()
+            if not code:
+                continue
+            if lat is None or lng is None:
+                dist = float("inf")
+            else:
+                dist = _haversine_m(seed_lat, seed_lng, float(lat), float(lng))
+            prox_rows.append((dist, code))
+        prox_rows.sort(key=lambda x: x[0])
+        # 기본은 반경 + 버퍼(500m) 내 동을 포함
+        limit_dist = radius_m + 500.0
+        near_codes = [c for d, c in prox_rows if d <= limit_dist]
+        if not near_codes:
+            near_codes = [c for _, c in prox_rows[:8]]
+        dong_codes = near_codes
     if not dong_codes:
         dong_codes = [dong_code]
-    elif dong_code not in dong_codes:
-        dong_codes.append(dong_code)
+    if dong_code not in dong_codes:
+        dong_codes.insert(0, dong_code)
     if max_dong_codes is not None and max_dong_codes > 0 and len(dong_codes) > max_dong_codes:
-        ordered = [dong_code] + [c for c in dong_codes if c != dong_code]
-        dong_codes = ordered[:max_dong_codes]
+        dedup = []
+        seen = set()
+        for c in dong_codes:
+            if c in seen:
+                continue
+            seen.add(c)
+            dedup.append(c)
+        dong_codes = dedup[:max_dong_codes]
 
     scored: list[tuple[float, KbComplexCandidate]] = []
     for code in dong_codes:
@@ -1011,6 +1057,7 @@ def collect_dataset(
     fast_mode: bool = True,
     max_dong_codes: int | None = 8,
     index_items: list[dict[str, Any]] | None = None,
+    preferred_dong: str | None = None,
 ) -> tuple[pd.DataFrame, list[tuple[str, KbComplexCandidate]], list[KbComplexCandidate], pd.DataFrame, list[QueryMetric]]:
     if fast_mode:
         set_delay_range(0.05, 0.15)
@@ -1065,7 +1112,13 @@ def collect_dataset(
         seed_complex_id: int | None = None
         seed_complex_name: str | None = None
 
-        candidates = fetch_kb_complex_candidates(session, query=query, top_n=10, index_items=kb_index_items)
+        candidates = fetch_kb_complex_candidates(
+            session,
+            query=query,
+            top_n=10,
+            index_items=kb_index_items,
+            preferred_dong=preferred_dong,
+        )
         if not candidates:
             LOGGER.warning("KB 단지 후보를 찾지 못했습니다: %s", query)
             query_finished_at = datetime.now()
@@ -1264,6 +1317,7 @@ def collect_dataset(
 def run(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="단지명 기반 자동 수집 후 엑셀 저장(KB fallback pipeline)")
     parser.add_argument("--query", type=str, default=None, help="단지명")
+    parser.add_argument("--dong", type=str, default=None, help="우선 동명(예: 응암동)")
     parser.add_argument("--radius-m", type=float, default=500.0, help="주변 자동 수집 반경(미터)")
     parser.add_argument("--min-households", type=int, default=290, help="수집 최소 세대수")
     parser.add_argument("--log-level", type=str, default="INFO")
@@ -1279,6 +1333,7 @@ def run(argv: list[str] | None = None) -> int:
             raw_query=raw_query,
             radius_m=args.radius_m,
             min_households=args.min_households,
+            preferred_dong=(args.dong.strip() if isinstance(args.dong, str) and args.dong.strip() else None),
         )
     except ValueError as exc:
         print(str(exc))
