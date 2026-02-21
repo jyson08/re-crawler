@@ -38,13 +38,15 @@ COL_HALL_TYPE = "\ud604\uad00\uad6c\uc870"
 COL_FAR = "\uc6a9\uc801\ub960"
 COL_ROOM = "\ubc29\uac2f\uc218"
 COL_BATH = "\ud654\uc7a5\uc2e4\uac2f\uc218"
-COL_RECENT_SALE = "\ucd5c\uadfc\uc2e4\uac70\ub798\uac00(\ub9e4\ub9e4)"
+COL_RECENT_SALE = "\uc2e4\ub9e4\ub9e4\uac00"
 COL_RECENT_SALE_DATE_FLOOR = "\ub0a0\uc9dc/\uce35"
 COL_SALE = "KB\uc2dc\uc138"
-COL_MIN_ASK_SALE = "\ucd5c\uc800\ub9e4\ubb3c\uac00(\ub9e4\ub9e4)"
+COL_MIN_ASK_SALE = "\ucd5c\uc800\uac00"
 COL_UNDERVALUE_RATIO = "\uad34\ub9ac\uc728%"
-COL_RECENT_LEASE = "\ucd5c\uadfc\uc2e4\uac70\ub798\uac00(\uc804\uc138)"
+COL_RECENT_LEASE = "\uc2e4\uc804\uc138\uac00"
 COL_LEASE = "KB\uc804\uc138"
+COL_MIN_ASK_LEASE = "\ucd5c\uc800\ub9e4\ubb3c\uac00(\uc804\uc138)"
+COL_GAP_RATIO_LEASE = "\uad34\ub9ac\uc728%(\uc804\uc138)"
 COL_LEASE_RATIO = "\uc804\uc138\uac00\uc728"
 COL_LISTING_SALE = "\ub9e4\ub9e4"
 COL_LISTING_LEASE = "\uc804\uc138"
@@ -77,6 +79,8 @@ OUTPUT_COLUMNS = [
     COL_UNDERVALUE_RATIO,
     COL_RECENT_LEASE,
     COL_LEASE,
+    COL_MIN_ASK_LEASE,
+    COL_GAP_RATIO_LEASE,
     COL_LEASE_RATIO,
     COL_LISTING_SALE,
     COL_LISTING_LEASE,
@@ -922,6 +926,10 @@ def build_dataframe_from_kb(query: str, candidate: KbComplexCandidate, payloads:
                 sale = low or high
 
         lease = _to_int(m.get("전세일반거래가"))
+        min_ask_lease = None
+        chart_min_ask_lease = _to_int(chart_data.get("\ub9e4\ubb3c\uc804\uc138\ucd5c\uc800\uac00")) if isinstance(chart_data, dict) else None
+        if chart_min_ask_lease is not None:
+            min_ask_lease = chart_min_ask_lease
 
         recent_sale_price = None
         recent_sale_date_floor = None
@@ -987,6 +995,8 @@ def build_dataframe_from_kb(query: str, candidate: KbComplexCandidate, payloads:
                 COL_UNDERVALUE_RATIO: _calc_undervalue_ratio(min_ask_sale, sale),
                 COL_RECENT_LEASE: recent_lease_price,
                 COL_LEASE: lease,
+                COL_MIN_ASK_LEASE: min_ask_lease,
+                COL_GAP_RATIO_LEASE: _calc_undervalue_ratio(min_ask_lease, lease),
                 COL_LEASE_RATIO: _calc_lease_ratio(lease, sale),
                 COL_LISTING_SALE: sale_count,
                 COL_LISTING_LEASE: lease_count,
@@ -1039,6 +1049,8 @@ def save_output(df: pd.DataFrame, query: str, output_dir: str = "./output") -> P
         COL_UNDERVALUE_RATIO: "\uac00\uaca9",
         COL_RECENT_LEASE: "\uac00\uaca9",
         COL_LEASE: "\uac00\uaca9",
+        COL_MIN_ASK_LEASE: "\uac00\uaca9",
+        COL_GAP_RATIO_LEASE: "\uac00\uaca9",
         COL_LEASE_RATIO: "\uac00\uaca9",
         COL_LISTING_SALE: "\ub9e4\ubb3c\uc218",
         COL_LISTING_LEASE: "\ub9e4\ubb3c\uc218",
@@ -1088,8 +1100,8 @@ def save_output(df: pd.DataFrame, query: str, output_dir: str = "./output") -> P
                         ws.cell(row=r, column=c).fill = row_fill
 
             # Number formats
-            money_cols = {COL_RECENT_SALE, COL_SALE, COL_MIN_ASK_SALE, COL_RECENT_LEASE, COL_LEASE}
-            ratio_cols = {COL_UNDERVALUE_RATIO, COL_LEASE_RATIO}
+            money_cols = {COL_RECENT_SALE, COL_SALE, COL_MIN_ASK_SALE, COL_RECENT_LEASE, COL_LEASE, COL_MIN_ASK_LEASE}
+            ratio_cols = {COL_UNDERVALUE_RATIO, COL_GAP_RATIO_LEASE, COL_LEASE_RATIO}
             far_col = COL_FAR
             area_cols = {COL_SUPPLY, COL_PYUNG, COL_EXCLUSIVE}
             households_col = COL_TOTAL_HOUSEHOLDS
@@ -1143,17 +1155,22 @@ def save_output(df: pd.DataFrame, query: str, output_dir: str = "./output") -> P
                     cell.hyperlink = url
                     cell.style = "Hyperlink"
 
-            # Highlight rows where 0% < original ratio <= 100%.
-            # Since displayed value is gap(%) = ratio - 100, this means -100 < gap <= 0.
-            undervalue_idx = col_name_to_idx.get(COL_UNDERVALUE_RATIO)
+            # Highlight rows where any gap ratio is negative, or lease ratio >= 65%.
+            gap_sale_idx = col_name_to_idx.get(COL_UNDERVALUE_RATIO)
+            gap_lease_idx = col_name_to_idx.get(COL_GAP_RATIO_LEASE)
+            lease_ratio_idx = col_name_to_idx.get(COL_LEASE_RATIO)
             cond_fill = PatternFill(fill_type="solid", fgColor="DCE6F1")
             cond_font = Font(bold=True)
-            if undervalue_idx is not None:
+            if gap_sale_idx is not None or gap_lease_idx is not None or lease_ratio_idx is not None:
                 for r in range(3, max_row + 1):
-                    undervalue_val = _to_float(ws.cell(row=r, column=undervalue_idx).value)
-                    if undervalue_val is None:
-                        continue
-                    if undervalue_val < 0.0:
+                    gap_sale_val = _to_float(ws.cell(row=r, column=gap_sale_idx).value) if gap_sale_idx is not None else None
+                    gap_lease_val = _to_float(ws.cell(row=r, column=gap_lease_idx).value) if gap_lease_idx is not None else None
+                    lease_ratio_val = _to_float(ws.cell(row=r, column=lease_ratio_idx).value) if lease_ratio_idx is not None else None
+                    if (
+                        (gap_sale_val is not None and gap_sale_val < 0.0)
+                        or (gap_lease_val is not None and gap_lease_val < 0.0)
+                        or (lease_ratio_val is not None and lease_ratio_val >= 65.0)
+                    ):
                         for c in range(1, len(df.columns) + 1):
                             cell = ws.cell(row=r, column=c)
                             cell.fill = cond_fill

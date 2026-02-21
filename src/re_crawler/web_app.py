@@ -267,6 +267,7 @@ def _build_web_display_df(df):
         ae.COL_MIN_ASK_SALE,
         ae.COL_RECENT_LEASE,
         ae.COL_LEASE,
+        ae.COL_MIN_ASK_LEASE,
     ]
     for c in money_cols:
         if c in out.columns:
@@ -279,7 +280,7 @@ def _build_web_display_df(df):
         if c in out.columns:
             out[c] = out[c].map(_fmt_area)
 
-    for c in [ae.COL_UNDERVALUE_RATIO, ae.COL_LEASE_RATIO]:
+    for c in [ae.COL_UNDERVALUE_RATIO, ae.COL_GAP_RATIO_LEASE, ae.COL_LEASE_RATIO]:
         if c in out.columns:
             out[c] = out[c].map(_fmt_ratio)
 
@@ -294,15 +295,21 @@ def _build_web_display_df(df):
 def _styled_result_df(df):
     raw_df = df
     display_df = _build_web_display_df(df)
-    ratio_col = ae.COL_UNDERVALUE_RATIO
-    if ratio_col not in raw_df.columns:
+    sale_gap_col = ae.COL_UNDERVALUE_RATIO
+    lease_gap_col = ae.COL_GAP_RATIO_LEASE
+    lease_ratio_col = ae.COL_LEASE_RATIO
+    if sale_gap_col not in raw_df.columns and lease_gap_col not in raw_df.columns and lease_ratio_col not in raw_df.columns:
         return display_df
 
     def _row_style(row):
-        ratio = _to_float_safe(raw_df.at[row.name, ratio_col]) if row.name in raw_df.index else None
-        if ratio is None:
-            return [""] * len(display_df.columns)
-        if ratio < 0.0:
+        sale_gap = _to_float_safe(raw_df.at[row.name, sale_gap_col]) if (row.name in raw_df.index and sale_gap_col in raw_df.columns) else None
+        lease_gap = _to_float_safe(raw_df.at[row.name, lease_gap_col]) if (row.name in raw_df.index and lease_gap_col in raw_df.columns) else None
+        lease_ratio = _to_float_safe(raw_df.at[row.name, lease_ratio_col]) if (row.name in raw_df.index and lease_ratio_col in raw_df.columns) else None
+        if (
+            (sale_gap is not None and sale_gap < 0.0)
+            or (lease_gap is not None and lease_gap < 0.0)
+            or (lease_ratio is not None and lease_ratio >= 65.0)
+        ):
             return ["background-color: #DCE6F1; font-weight: 700"] * len(display_df.columns)
         return [""] * len(display_df.columns)
 
