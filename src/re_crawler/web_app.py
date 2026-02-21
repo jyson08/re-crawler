@@ -48,6 +48,27 @@ def _circle_polygon(lat: float, lng: float, radius_m: float, points: int = 72) -
     return out
 
 
+def _circle_dashed_paths(
+    lat: float,
+    lng: float,
+    radius_m: float,
+    points: int = 180,
+    dash_step: int = 4,
+    gap_step: int = 3,
+) -> list[list[list[float]]]:
+    ring = _circle_polygon(lat, lng, radius_m, points=points)
+    paths: list[list[list[float]]] = []
+    step = max(1, dash_step + gap_step)
+    for i in range(0, points, step):
+        seg: list[list[float]] = []
+        for j in range(dash_step + 1):
+            idx = (i + j) % points
+            seg.append(ring[idx])
+        if len(seg) >= 2:
+            paths.append(seg)
+    return paths
+
+
 def _render_map(markers_df, radius_m: float):
     if markers_df.empty:
         st.info("지도에 표시할 좌표 데이터가 없습니다.")
@@ -64,29 +85,33 @@ def _render_map(markers_df, radius_m: float):
     map_df["color"] = map_df["is_seed"].map(lambda x: [220, 53, 69, 180] if bool(x) else [52, 152, 219, 170])
     map_df["label_text"] = map_df.apply(_build_label_text, axis=1)
     seed_df = map_df[map_df["is_seed"] == True].copy()
+    radius_dash_rows = []
     if not seed_df.empty:
-        seed_df["polygon"] = seed_df.apply(
-            lambda r: _circle_polygon(float(r["lat"]), float(r["lng"]), float(radius_m), points=90),
+        seed_df["radius_paths"] = seed_df.apply(
+            lambda r: _circle_dashed_paths(float(r["lat"]), float(r["lng"]), float(radius_m)),
             axis=1,
         )
+        seed_df["radius_label"] = f"반경: {int(radius_m)}m"
+        for _, row in seed_df.iterrows():
+            for path in row["radius_paths"]:
+                radius_dash_rows.append({"path": path})
 
     marker_layer = pdk.Layer(
         "ScatterplotLayer",
         data=map_df,
         get_position="[lng, lat]",
-        get_radius=45,
+        get_radius=28,
         get_fill_color="color",
         pickable=True,
     )
     radius_layer = pdk.Layer(
-        "PolygonLayer",
-        data=seed_df,
-        get_polygon="polygon",
-        get_fill_color=[220, 53, 69, 20],
-        get_line_color=[220, 53, 69, 180],
-        line_width_min_pixels=2.5,
-        stroked=True,
-        filled=True,
+        "PathLayer",
+        data=radius_dash_rows,
+        get_path="path",
+        get_color=[70, 70, 70, 220],
+        get_width=2,
+        width_min_pixels=2,
+        rounded=True,
         pickable=False,
     )
     text_layer = pdk.Layer(
@@ -100,6 +125,20 @@ def _render_map(markers_df, radius_m: float):
         get_text_anchor="start",
         get_alignment_baseline="top",
         get_pixel_offset=[10, 10],
+        billboard=True,
+        pickable=False,
+    )
+    radius_text_layer = pdk.Layer(
+        "TextLayer",
+        data=seed_df,
+        get_position="[lng, lat]",
+        get_text="radius_label",
+        get_color=[220, 53, 69, 230],
+        get_size=16,
+        size_units="pixels",
+        get_text_anchor="middle",
+        get_alignment_baseline="center",
+        get_pixel_offset=[0, -18],
         billboard=True,
         pickable=False,
     )
@@ -120,7 +159,7 @@ def _render_map(markers_df, radius_m: float):
             map_provider="carto",
             map_style="light",
             initial_view_state=view,
-            layers=[radius_layer, marker_layer, text_layer],
+            layers=[marker_layer, radius_layer, text_layer, radius_text_layer],
             tooltip=tooltip,
         )
     )
@@ -190,7 +229,6 @@ def main() -> None:
         st.session_state["crawled_count"] = len(crawled_info)
         st.session_state["download_bytes"] = file_bytes
         st.session_state["download_name"] = Path(out_path).name
-        st.session_state["radius_m"] = float(radius_m)
 
     if not st.session_state.get("has_result", False):
         st.caption("왼쪽에서 단지명과 옵션을 입력한 뒤 `크롤링 실행`을 누르세요.")
@@ -212,7 +250,7 @@ def main() -> None:
     )
 
     st.subheader("단지 위치 지도")
-    _render_map(markers_df, radius_m=float(st.session_state.get("radius_m", radius_m)))
+    _render_map(markers_df, radius_m=float(radius_m))
 
 
 if __name__ == "__main__":
