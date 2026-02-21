@@ -464,6 +464,7 @@ def fetch_kb_nearby_apartment_candidates(
     seed_main: dict[str, Any],
     radius_m: float = 500.0,
     max_dong_codes: int | None = None,
+    adjacent_dong_extra_m: float = 800.0,
 ) -> list[KbComplexCandidate]:
     seed_lat = _to_float(seed_main.get("wgs84위도"))
     seed_lng = _to_float(seed_main.get("wgs84경도"))
@@ -537,7 +538,9 @@ def fetch_kb_nearby_apartment_candidates(
                 continue
 
             distance = _haversine_m(seed_lat, seed_lng, lat, lng)
-            if distance > radius_m:
+            row_dong_code = str(row.get("법정동코드") or "").strip()
+            limit_m = radius_m if row_dong_code == dong_code else (radius_m + max(0.0, adjacent_dong_extra_m))
+            if distance > limit_m:
                 continue
 
             name = str(row.get("단지명") or "").strip()
@@ -1032,6 +1035,127 @@ def save_query_metrics(metrics: list[QueryMetric], output_dir: str = "./output")
     return out_path
 
 
+def preview_candidates(
+    raw_query: str,
+    radius_m: float = 500.0,
+    min_households: int = 290,
+    preferred_dong: str | None = None,
+    fast_mode: bool = True,
+    max_dong_codes: int | None = None,
+    index_items: list[dict[str, Any]] | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, list[int], list[tuple[str, KbComplexCandidate]]]:
+    if fast_mode:
+        set_delay_range(0.05, 0.15)
+    else:
+        set_delay_range(0.5, 1.5)
+
+    queries = split_queries(raw_query)
+    if not queries:
+        raise ValueError("단지명이 비어 있습니다.")
+
+    session = create_kb_session()
+    kb_index_items = index_items if index_items is not None else fetch_kb_complex_index(session)
+    if not kb_index_items:
+        raise ValueError("KB 단지 인덱스를 불러오지 못했습니다.")
+
+    selected_info: list[tuple[str, KbComplexCandidate]] = []
+    processed_ids: set[int] = set()
+    preview_rows: list[dict[str, Any]] = []
+    marker_rows: list[dict[str, Any]] = []
+
+    for query in queries:
+        candidates = fetch_kb_complex_candidates(
+            session,
+            query=query,
+            top_n=10,
+            index_items=kb_index_items,
+            preferred_dong=preferred_dong,
+        )
+        if not candidates:
+            continue
+        seed = select_best_candidate(query, candidates)
+        selected_info.append((query, seed))
+
+        seed_main = fetch_kb_complex_main(session, seed.complex_id) or {}
+        nearby = fetch_kb_nearby_apartment_candidates(
+            session=session,
+            seed_candidate=seed,
+            seed_main=seed_main,
+            radius_m=radius_m,
+            max_dong_codes=max_dong_codes,
+        )
+        for cand in nearby:
+            if cand.complex_id in processed_ids:
+                continue
+            if cand.complex_id == seed.complex_id:
+                main_data = seed_main
+            else:
+                main_data = fetch_kb_complex_main(session, cand.complex_id) or {}
+            households = _to_int(main_data.get("총세대수"))
+            if households is None or households < min_households:
+                continue
+
+            processed_ids.add(cand.complex_id)
+            built_year = _to_int(main_data.get("준공년"))
+            addr = str(main_data.get("구주소") or main_data.get("신주소") or main_data.get("도로기본주소") or "")
+            city, gu, dong = _extract_city_gu_dong(addr if addr else None)
+            parking_ratio = _to_float(main_data.get("세대당주차대수비율"))
+            if parking_ratio is None:
+                total_parking = _to_int(main_data.get("총주차대수"))
+                if total_parking is not None and households not in (None, 0):
+                    parking_ratio = total_parking / households
+            parking_text = f"{round(parking_ratio, 2):.2f}대" if parking_ratio is not None else None
+            hall_type = main_data.get("현관구조")
+
+            preview_rows.append(
+                {
+                    "complex_id": cand.complex_id,
+                    "단지명": str(main_data.get("단지명") or cand.name),
+                    "시": city,
+                    "구": gu,
+                    "동": dong,
+                    "준공연도": built_year,
+                    "세대수": households,
+                    "주차대수": parking_text,
+                    "현관구조": hall_type,
+                    "seed_query": query,
+                    "is_seed": cand.complex_id == seed.complex_id,
+                }
+            )
+
+            marker = _extract_marker_row(
+                cand=cand,
+                main_data=main_data,
+                seed_query=query,
+                is_seed=(cand.complex_id == seed.complex_id),
+            )
+            if marker:
+                marker_rows.append(marker)
+
+    if not preview_rows:
+        raise ValueError("조건에 맞는 후보 단지가 없습니다.")
+
+    preview_df = pd.DataFrame(preview_rows)
+    preview_df = preview_df.sort_values(by=["is_seed", "시", "구", "동", "단지명"], ascending=[False, True, True, True, True])
+    markers_df = pd.DataFrame(
+        marker_rows,
+        columns=[
+            "complex_id",
+            "complex_name",
+            "lat",
+            "lng",
+            "seed_query",
+            "is_seed",
+            "built_year",
+            "households",
+            "parking",
+            "hall_type",
+        ],
+    ).drop_duplicates(subset=["complex_id"], keep="first")
+    candidate_ids = preview_df["complex_id"].astype(int).tolist()
+    return preview_df, markers_df, candidate_ids, selected_info
+
+
 def collect_dataset(
     raw_query: str,
     radius_m: float = 500.0,
@@ -1041,6 +1165,7 @@ def collect_dataset(
     max_dong_codes: int | None = None,
     index_items: list[dict[str, Any]] | None = None,
     preferred_dong: str | None = None,
+    candidate_ids: list[int] | None = None,
 ) -> tuple[pd.DataFrame, list[tuple[str, KbComplexCandidate]], list[KbComplexCandidate], pd.DataFrame, list[QueryMetric]]:
     if fast_mode:
         set_delay_range(0.05, 0.15)
@@ -1075,6 +1200,123 @@ def collect_dataset(
     metrics: list[QueryMetric] = []
     main_cache: dict[int, dict[str, Any]] = {}
     payload_cache: dict[int, dict[str, Any]] = {}
+
+    if candidate_ids:
+        chosen_ids = []
+        seen = set()
+        for cid in candidate_ids:
+            iv = _to_int(cid)
+            if iv is None or iv in seen:
+                continue
+            seen.add(iv)
+            chosen_ids.append(iv)
+        if not chosen_ids:
+            raise ValueError("수집할 후보 단지 ID가 없습니다.")
+
+        started_at = datetime.now()
+        attempted = 0
+        success = 0
+        failed = 0
+        seed_query = queries[0]
+
+        if progress_callback:
+            progress_callback(
+                {
+                    "event": "query_target_ready",
+                    "query": seed_query,
+                    "current": 0,
+                    "total": len(chosen_ids),
+                }
+            )
+
+        for idx, cid in enumerate(chosen_ids, start=1):
+            attempted += 1
+            payloads = fetch_kb_complex_payloads(session, cid)
+            main_data = payloads.get("main") if isinstance(payloads.get("main"), dict) else {}
+            cand = KbComplexCandidate(
+                complex_id=cid,
+                name=str(main_data.get("단지명") or f"complex_{cid}"),
+                address=str(main_data.get("구주소") or main_data.get("신주소") or "") or None,
+                score=0.0,
+            )
+            df = build_dataframe_from_kb(query=seed_query, candidate=cand, payloads=payloads)
+            if df.empty:
+                failed += 1
+                if progress_callback:
+                    progress_callback(
+                        {
+                            "event": "query_progress",
+                            "query": seed_query,
+                            "current": idx,
+                            "total": len(chosen_ids),
+                            "complex_name": cand.name,
+                            "success": False,
+                        }
+                    )
+                continue
+            success += 1
+            crawled_info.append(cand)
+            all_frames.append(df)
+
+            marker = _extract_marker_row(
+                cand=cand,
+                main_data=main_data,
+                seed_query=seed_query,
+                is_seed=(idx == 1),
+            )
+            if marker and cand.complex_id not in marker_ids:
+                marker_ids.add(cand.complex_id)
+                marker_rows.append(marker)
+
+            if progress_callback:
+                progress_callback(
+                    {
+                        "event": "query_progress",
+                        "query": seed_query,
+                        "current": idx,
+                        "total": len(chosen_ids),
+                        "complex_name": cand.name,
+                        "success": True,
+                    }
+                )
+
+        finished_at = datetime.now()
+        metrics.append(
+            QueryMetric(
+                query=seed_query,
+                started_at=started_at,
+                finished_at=finished_at,
+                elapsed_sec=round((finished_at - started_at).total_seconds(), 2),
+                seed_complex_id=chosen_ids[0],
+                seed_complex_name=None,
+                nearby_candidates=len(chosen_ids),
+                target_candidates=len(chosen_ids),
+                attempted_complexes=attempted,
+                success_complexes=success,
+                failed_complexes=failed,
+            )
+        )
+
+        if not all_frames:
+            raise ValueError("수집 가능한 단지가 없습니다.")
+
+        result_df = pd.concat(all_frames, ignore_index=True)
+        markers_df = pd.DataFrame(
+            marker_rows,
+            columns=[
+                "complex_id",
+                "complex_name",
+                "lat",
+                "lng",
+                "seed_query",
+                "is_seed",
+                "built_year",
+                "households",
+                "parking",
+                "hall_type",
+            ],
+        )
+        return result_df, selected_info, crawled_info, markers_df, metrics
 
     total_queries = len(queries)
     for q_idx, query in enumerate(queries, start=1):
