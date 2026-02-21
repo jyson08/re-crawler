@@ -4,6 +4,7 @@ import math
 import sys
 import inspect
 import os
+import json
 from pathlib import Path
 
 import pydeck as pdk
@@ -113,7 +114,68 @@ def _call_collect_dataset_compat(**kwargs):
 @st.cache_data(ttl=3600, show_spinner=False)
 def _cached_kb_index() -> list[dict]:
     session = ae.create_kb_session()
-    return ae.fetch_kb_complex_index(session)
+    items = ae.fetch_kb_complex_index(session)
+    # Do not keep empty snapshots in cache; they are usually transient failures.
+    if not items:
+        raise RuntimeError("empty_kb_index")
+    return items
+
+
+def _kb_index_cache_file() -> Path:
+    p = Path("./output/kb_index_cache.json")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _load_kb_index_file_cache() -> list[dict]:
+    p = _kb_index_cache_file()
+    if not p.exists():
+        return []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [x for x in data if isinstance(x, dict)]
+
+
+def _save_kb_index_file_cache(items: list[dict]) -> None:
+    if not items:
+        return
+    p = _kb_index_cache_file()
+    try:
+        p.write_text(json.dumps(items, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _get_kb_index_resilient() -> list[dict]:
+    # 1) Try streamlit cache.
+    try:
+        items = _cached_kb_index()
+        if items:
+            _save_kb_index_file_cache(items)
+            return items
+    except Exception:
+        pass
+
+    # 2) Clear stale empty cache and retry direct once.
+    try:
+        _cached_kb_index.clear()
+    except Exception:
+        pass
+    try:
+        session = ae.create_kb_session()
+        items = ae.fetch_kb_complex_index(session)
+        if items:
+            _save_kb_index_file_cache(items)
+            return items
+    except Exception:
+        pass
+
+    # 3) Fallback to last successful local snapshot.
+    return _load_kb_index_file_cache()
 
 
 def _build_label_text(row) -> str:
@@ -330,7 +392,7 @@ def main() -> None:
         with st.spinner("데이터 수집 중입니다..."):
             try:
                 progress_bar.progress(3, text="단지 인덱스 캐시 확인 중...")
-                index_items = _cached_kb_index()
+                index_items = _get_kb_index_resilient()
                 if has_preview_api:
                     preview_df, preview_markers_df, candidate_ids, _selected = ae.preview_candidates(
                         raw_query=query.strip(),
@@ -438,7 +500,7 @@ def main() -> None:
                     progress_callback=_on_progress,
                     fast_mode=True,
                     max_dong_codes=None,
-                    index_items=_cached_kb_index(),
+                    index_items=_get_kb_index_resilient(),
                     preferred_dong=(st.session_state.get("dong") or None),
                     candidate_ids=selected_ids,
                 )
