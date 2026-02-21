@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import logging
 import math
 import random
 import re
 import time
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 import requests
@@ -90,6 +91,27 @@ class KbComplexCandidate:
     name: str
     address: str | None
     score: float
+
+
+@dataclass
+class QueryMetric:
+    query: str
+    started_at: datetime
+    finished_at: datetime
+    elapsed_sec: float
+    seed_complex_id: int | None
+    seed_complex_name: str | None
+    nearby_candidates: int
+    target_candidates: int
+    attempted_complexes: int
+    success_complexes: int
+    failed_complexes: int
+
+    @property
+    def failure_rate_pct(self) -> float:
+        if self.attempted_complexes <= 0:
+            return 0.0
+        return round((self.failed_complexes / self.attempted_complexes) * 100.0, 1)
 
 
 def setup_logging(level: str) -> None:
@@ -896,6 +918,15 @@ def _extract_marker_row(cand: KbComplexCandidate, main_data: dict[str, Any], see
     lng = _to_float(main_data.get("wgs84경도"))
     if lat is None or lng is None:
         return None
+    built_year = _to_int(main_data.get("준공년"))
+    households = _to_int(main_data.get("총세대수"))
+    parking_ratio = _to_float(main_data.get("세대당주차대수비율"))
+    if parking_ratio is None:
+        total_parking = _to_int(main_data.get("총주차대수"))
+        if total_parking is not None and households not in (None, 0):
+            parking_ratio = total_parking / households
+    parking_text = f"{round(parking_ratio, 2):.2f}대" if parking_ratio is not None else None
+    hall_type = str(main_data.get("현관구조") or "").strip() or None
     return {
         "complex_id": cand.complex_id,
         "complex_name": str(main_data.get("단지명") or cand.name),
@@ -903,14 +934,65 @@ def _extract_marker_row(cand: KbComplexCandidate, main_data: dict[str, Any], see
         "lng": lng,
         "seed_query": seed_query,
         "is_seed": is_seed,
+        "built_year": built_year,
+        "households": households,
+        "parking": parking_text,
+        "hall_type": hall_type,
     }
+
+
+def save_query_metrics(metrics: list[QueryMetric], output_dir: str = "./output") -> Path:
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    out_path = Path(output_dir) / "query_metrics.csv"
+    file_exists = out_path.exists()
+    with out_path.open("a", newline="", encoding="utf-8-sig") as fp:
+        writer = csv.writer(fp)
+        if not file_exists:
+            writer.writerow(
+                [
+                    "run_at",
+                    "query",
+                    "started_at",
+                    "finished_at",
+                    "elapsed_sec",
+                    "seed_complex_id",
+                    "seed_complex_name",
+                    "nearby_candidates",
+                    "target_candidates",
+                    "attempted_complexes",
+                    "success_complexes",
+                    "failed_complexes",
+                    "failure_rate_pct",
+                ]
+            )
+        run_at = datetime.now().isoformat(timespec="seconds")
+        for m in metrics:
+            writer.writerow(
+                [
+                    run_at,
+                    m.query,
+                    m.started_at.isoformat(timespec="seconds"),
+                    m.finished_at.isoformat(timespec="seconds"),
+                    m.elapsed_sec,
+                    m.seed_complex_id,
+                    m.seed_complex_name,
+                    m.nearby_candidates,
+                    m.target_candidates,
+                    m.attempted_complexes,
+                    m.success_complexes,
+                    m.failed_complexes,
+                    m.failure_rate_pct,
+                ]
+            )
+    return out_path
 
 
 def collect_dataset(
     raw_query: str,
     radius_m: float = 500.0,
     min_households: int = 290,
-) -> tuple[pd.DataFrame, list[tuple[str, KbComplexCandidate]], list[KbComplexCandidate], pd.DataFrame]:
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> tuple[pd.DataFrame, list[tuple[str, KbComplexCandidate]], list[KbComplexCandidate], pd.DataFrame, list[QueryMetric]]:
     queries = split_queries(raw_query)
     if not queries:
         raise ValueError("단지명이 비어 있습니다.")
@@ -926,14 +1008,42 @@ def collect_dataset(
     marker_rows: list[dict[str, Any]] = []
     marker_ids: set[int] = set()
     processed_complex_ids: set[int] = set()
+    metrics: list[QueryMetric] = []
 
     for query in queries:
+        query_started_at = datetime.now()
+        attempted_complexes = 0
+        success_complexes = 0
+        failed_complexes = 0
+        nearby_candidates_count = 0
+        target_candidates_count = 0
+        seed_complex_id: int | None = None
+        seed_complex_name: str | None = None
+
         candidates = fetch_kb_complex_candidates(session, query=query, top_n=10, index_items=kb_index_items)
         if not candidates:
             LOGGER.warning("KB 단지 후보를 찾지 못했습니다: %s", query)
+            query_finished_at = datetime.now()
+            metrics.append(
+                QueryMetric(
+                    query=query,
+                    started_at=query_started_at,
+                    finished_at=query_finished_at,
+                    elapsed_sec=round((query_finished_at - query_started_at).total_seconds(), 2),
+                    seed_complex_id=None,
+                    seed_complex_name=None,
+                    nearby_candidates=0,
+                    target_candidates=0,
+                    attempted_complexes=0,
+                    success_complexes=0,
+                    failed_complexes=0,
+                )
+            )
             continue
 
         seed = select_best_candidate(query, candidates)
+        seed_complex_id = seed.complex_id
+        seed_complex_name = seed.name
         selected_info.append((query, seed))
         LOGGER.info("Selected seed candidate: id=%s name=%s score=%.1f", seed.complex_id, seed.name, seed.score)
 
@@ -951,6 +1061,7 @@ def collect_dataset(
             seed.complex_id,
             len(nearby_candidates),
         )
+        nearby_candidates_count = len(nearby_candidates)
 
         target_candidates: list[tuple[KbComplexCandidate, dict[str, Any], int]] = []
         for cand in nearby_candidates:
@@ -980,13 +1091,25 @@ def collect_dataset(
             min_households,
             len(target_candidates),
         )
+        target_candidates_count = len(target_candidates)
         for cand, _, households in target_candidates:
             LOGGER.info("Target complex: id=%s name=%s households=%s", cand.complex_id, cand.name, households)
+
+        if progress_callback:
+            progress_callback(
+                {
+                    "event": "query_target_ready",
+                    "query": query,
+                    "current": 0,
+                    "total": target_candidates_count,
+                }
+            )
 
         for cand, _, _ in target_candidates:
             if cand.complex_id in processed_complex_ids:
                 continue
             processed_complex_ids.add(cand.complex_id)
+            attempted_complexes += 1
 
             if cand.complex_id == seed.complex_id:
                 payloads = seed_payloads
@@ -995,7 +1118,20 @@ def collect_dataset(
 
             df = build_dataframe_from_kb(query=query, candidate=cand, payloads=payloads)
             if df.empty:
+                failed_complexes += 1
+                if progress_callback:
+                    progress_callback(
+                        {
+                            "event": "query_progress",
+                            "query": query,
+                            "current": attempted_complexes,
+                            "total": target_candidates_count,
+                            "complex_name": cand.name,
+                            "success": False,
+                        }
+                    )
                 continue
+            success_complexes += 1
             crawled_info.append(cand)
             all_frames.append(df)
 
@@ -1009,13 +1145,62 @@ def collect_dataset(
             if marker and cand.complex_id not in marker_ids:
                 marker_ids.add(cand.complex_id)
                 marker_rows.append(marker)
+            if progress_callback:
+                progress_callback(
+                    {
+                        "event": "query_progress",
+                        "query": query,
+                        "current": attempted_complexes,
+                        "total": target_candidates_count,
+                        "complex_name": cand.name,
+                        "success": True,
+                    }
+                )
+
+        query_finished_at = datetime.now()
+        metric = QueryMetric(
+            query=query,
+            started_at=query_started_at,
+            finished_at=query_finished_at,
+            elapsed_sec=round((query_finished_at - query_started_at).total_seconds(), 2),
+            seed_complex_id=seed_complex_id,
+            seed_complex_name=seed_complex_name,
+            nearby_candidates=nearby_candidates_count,
+            target_candidates=target_candidates_count,
+            attempted_complexes=attempted_complexes,
+            success_complexes=success_complexes,
+            failed_complexes=failed_complexes,
+        )
+        metrics.append(metric)
+        LOGGER.info(
+            "Query metric: query=%s elapsed=%.2fs success=%s/%s failure_rate=%.1f%%",
+            metric.query,
+            metric.elapsed_sec,
+            metric.success_complexes,
+            metric.attempted_complexes,
+            metric.failure_rate_pct,
+        )
 
     if not all_frames:
         raise ValueError("수집 가능한 단지가 없습니다.")
 
     result_df = pd.concat(all_frames, ignore_index=True)
-    markers_df = pd.DataFrame(marker_rows, columns=["complex_id", "complex_name", "lat", "lng", "seed_query", "is_seed"])
-    return result_df, selected_info, crawled_info, markers_df
+    markers_df = pd.DataFrame(
+        marker_rows,
+        columns=[
+            "complex_id",
+            "complex_name",
+            "lat",
+            "lng",
+            "seed_query",
+            "is_seed",
+            "built_year",
+            "households",
+            "parking",
+            "hall_type",
+        ],
+    )
+    return result_df, selected_info, crawled_info, markers_df, metrics
 
 
 def run(argv: list[str] | None = None) -> int:
@@ -1032,7 +1217,7 @@ def run(argv: list[str] | None = None) -> int:
         print("단지명이 비어 있습니다.")
         return 1
     try:
-        result_df, selected_info, crawled_info, _ = collect_dataset(
+        result_df, selected_info, crawled_info, _, metrics = collect_dataset(
             raw_query=raw_query,
             radius_m=args.radius_m,
             min_households=args.min_households,
@@ -1046,7 +1231,9 @@ def run(argv: list[str] | None = None) -> int:
     queries = split_queries(raw_query)
     save_stem = queries[0] if len(queries) == 1 else f"{queries[0]}_외{len(queries)-1}"
     out_path = save_output(result_df, query=save_stem)
+    metric_path = save_query_metrics(metrics)
     print(f"\n저장 완료: {out_path}")
+    print(f"메트릭 로그 저장: {metric_path}")
     for q, s in selected_info:
         print(f"[SEED][{q}] kb_complex_id: {s.complex_id}, kb_complex_name: {s.name}")
     print(f"총 수집 단지수(중복제거): {len(crawled_info)}")

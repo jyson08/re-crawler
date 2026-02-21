@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import pydeck as pdk
 import streamlit as st
@@ -11,7 +11,7 @@ SRC_DIR = Path(__file__).resolve().parents[1]
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from re_crawler.auto_excel import collect_dataset, save_output, split_queries
+from re_crawler.auto_excel import collect_dataset, save_output, save_query_metrics, split_queries
 
 
 def _save_stem_from_query(raw_query: str) -> str:
@@ -19,6 +19,19 @@ def _save_stem_from_query(raw_query: str) -> str:
     if not queries:
         return "complex"
     return queries[0] if len(queries) == 1 else f"{queries[0]}_외{len(queries)-1}"
+
+
+def _build_label_text(row) -> str:
+    built = row.get("built_year")
+    hh = row.get("households")
+    parking = row.get("parking")
+    hall = row.get("hall_type")
+
+    built_text = f"준공:{built}" if built is not None else "준공:-"
+    hh_text = f"세대:{hh:,}" if isinstance(hh, (int, float)) else "세대:-"
+    parking_text = f"주차:{parking}" if parking else "주차:-"
+    hall_text = f"현관:{hall}" if hall else "현관:-"
+    return f"{row['complex_name']}\n{built_text} | {hh_text}\n{parking_text} | {hall_text}"
 
 
 def _render_map(markers_df):
@@ -32,9 +45,10 @@ def _render_map(markers_df):
         zoom=13,
         pitch=0,
     )
+
     map_df = markers_df.copy()
     map_df["color"] = map_df["is_seed"].map(lambda x: [220, 53, 69, 180] if bool(x) else [52, 152, 219, 170])
-    map_df["label"] = map_df["complex_name"].astype(str)
+    map_df["label_text"] = map_df.apply(_build_label_text, axis=1)
 
     marker_layer = pdk.Layer(
         "ScatterplotLayer",
@@ -48,17 +62,29 @@ def _render_map(markers_df):
         "TextLayer",
         data=map_df,
         get_position="[lng, lat]",
-        get_text="label",
-        get_color=[20, 20, 20, 220],
+        get_text="label_text",
+        get_color=[33, 33, 33, 230],
         get_size=12,
-        get_alignment_baseline="'top'",
-        get_pixel_offset=[0, 10],
+        get_text_anchor="start",
+        get_alignment_baseline="bottom",
+        get_pixel_offset=[10, 6],
         pickable=False,
     )
+
     tooltip = {
-        "html": "<b>{complex_name}</b><br/>id: {complex_id}<br/>seed: {is_seed}<br/>query: {seed_query}",
+        "html": (
+            "<b>{complex_name}</b><br/>"
+            "준공연도: {built_year}<br/>"
+            "세대수: {households}<br/>"
+            "주차대수: {parking}<br/>"
+            "현관구조: {hall_type}<br/>"
+            "id: {complex_id}<br/>"
+            "seed: {is_seed}<br/>"
+            "query: {seed_query}"
+        ),
         "style": {"backgroundColor": "white", "color": "black"},
     }
+
     st.pydeck_chart(
         pdk.Deck(
             map_provider="carto",
@@ -71,7 +97,7 @@ def _render_map(markers_df):
 
 
 def main() -> None:
-    st.set_page_config(page_title="KB 부동산 크롤러", layout="wide")
+    st.set_page_config(page_title="KB 부동산 단지 크롤링", layout="wide")
     st.title("KB 부동산 단지 크롤링")
 
     with st.sidebar:
@@ -89,16 +115,41 @@ def main() -> None:
         st.error("단지명을 입력해 주세요.")
         return
 
+    progress_bar = st.progress(0, text="수집 준비 중...")
+    progress_text = st.empty()
+
+    def _on_progress(event: dict) -> None:
+        if event.get("event") == "query_target_ready":
+            total = int(event.get("total") or 0)
+            q = event.get("query")
+            progress_text.info(f"[{q}] 대상 단지 {total}개 확인")
+            if total <= 0:
+                progress_bar.progress(100, text=f"[{q}] 처리할 단지가 없습니다.")
+            else:
+                progress_bar.progress(0, text=f"[{q}] 0/{total} 처리 중")
+        elif event.get("event") == "query_progress":
+            total = max(1, int(event.get("total") or 1))
+            current = min(total, int(event.get("current") or 0))
+            q = event.get("query")
+            name = event.get("complex_name") or ""
+            pct = int((current / total) * 100)
+            progress_bar.progress(pct, text=f"[{q}] {current}/{total} 처리 중")
+            progress_text.caption(f"현재 단지: {name}")
+
     with st.spinner("데이터 수집 중입니다..."):
         try:
-            result_df, selected_info, crawled_info, markers_df = collect_dataset(
+            result_df, selected_info, crawled_info, markers_df, metrics = collect_dataset(
                 raw_query=query.strip(),
                 radius_m=float(radius_m),
                 min_households=int(min_households),
+                progress_callback=_on_progress,
             )
         except ValueError as exc:
+            progress_bar.empty()
+            progress_text.empty()
             st.error(str(exc))
             return
+    progress_bar.progress(100, text="수집 완료")
 
     st.success(f"수집 완료: {len(result_df)}행, 단지 {len(crawled_info)}개")
 
@@ -122,6 +173,26 @@ def main() -> None:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
     st.caption(f"서버 저장 경로: `{out_path}`")
+    metric_path = save_query_metrics(metrics)
+    st.caption(f"쿼리 메트릭 로그: `{metric_path}`")
+
+    metric_rows = [
+        {
+            "query": m.query,
+            "elapsed_sec": m.elapsed_sec,
+            "seed_complex_id": m.seed_complex_id,
+            "seed_complex_name": m.seed_complex_name,
+            "nearby_candidates": m.nearby_candidates,
+            "target_candidates": m.target_candidates,
+            "attempted_complexes": m.attempted_complexes,
+            "success_complexes": m.success_complexes,
+            "failed_complexes": m.failed_complexes,
+            "failure_rate_pct": m.failure_rate_pct,
+        }
+        for m in metrics
+    ]
+    st.subheader("쿼리 처리 로그")
+    st.dataframe(metric_rows, use_container_width=True, hide_index=True)
 
     st.subheader("단지 위치 지도")
     _render_map(markers_df)
