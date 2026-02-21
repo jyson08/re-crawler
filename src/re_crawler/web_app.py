@@ -12,18 +12,11 @@ SRC_DIR = Path(__file__).resolve().parents[1]
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from re_crawler.auto_excel import (
-    collect_dataset,
-    create_kb_session,
-    fetch_kb_complex_index,
-    preview_candidates,
-    save_output,
-    split_queries,
-)
+import re_crawler.auto_excel as ae
 
 
 def _save_stem_from_query(raw_query: str) -> str:
-    queries = split_queries(raw_query)
+    queries = ae.split_queries(raw_query)
     if not queries:
         return "complex"
     return queries[0] if len(queries) == 1 else f"{queries[0]}_외{len(queries)-1}"
@@ -31,8 +24,8 @@ def _save_stem_from_query(raw_query: str) -> str:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _cached_kb_index() -> list[dict]:
-    session = create_kb_session()
-    return fetch_kb_complex_index(session)
+    session = ae.create_kb_session()
+    return ae.fetch_kb_complex_index(session)
 
 
 def _build_label_text(row) -> str:
@@ -232,7 +225,7 @@ def main() -> None:
             try:
                 progress_bar.progress(3, text="단지 인덱스 캐시 확인 중...")
                 index_items = _cached_kb_index()
-                preview_df, preview_markers_df, candidate_ids, _selected = preview_candidates(
+                preview_df, preview_markers_df, candidate_ids, _selected = ae.preview_candidates(
                     raw_query=query.strip(),
                     radius_m=float(radius_m),
                     min_households=int(min_households),
@@ -296,7 +289,7 @@ def main() -> None:
         progress_text = st.empty()
         with st.spinner("후보 단지 수집 중입니다..."):
             try:
-                result_df, _selected_info, crawled_info, markers_df, _metrics = collect_dataset(
+                result_df, _selected_info, crawled_info, markers_df, _metrics = ae.collect_dataset(
                     raw_query=st.session_state["query"],
                     radius_m=float(st.session_state["radius_m"]),
                     min_households=int(st.session_state["min_households"]),
@@ -315,7 +308,7 @@ def main() -> None:
         progress_bar.progress(100, text="수집 완료")
 
         save_stem = _save_stem_from_query(st.session_state["query"])
-        out_path = save_output(result_df, query=save_stem)
+        out_path = ae.save_output(result_df, query=save_stem)
         file_bytes = Path(out_path).read_bytes()
         st.session_state["has_result"] = True
         st.session_state["result_df"] = result_df
