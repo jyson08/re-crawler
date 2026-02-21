@@ -1112,6 +1112,17 @@ def save_output(df: pd.DataFrame, query: str, output_dir: str = "./output") -> P
                 for r in range(3, max_row + 1):
                     ws.cell(row=r, column=households_idx).number_format = "#,##0"
 
+            # Make link column a clickable hyperlink in Excel.
+            link_idx = col_name_to_idx.get(COL_LINK)
+            if link_idx is not None:
+                for r in range(3, max_row + 1):
+                    cell = ws.cell(row=r, column=link_idx)
+                    url = str(cell.value or "").strip()
+                    if not url:
+                        continue
+                    cell.hyperlink = url
+                    cell.style = "Hyperlink"
+
             # Highlight rows where undervalue ratio is <= 100%.
             undervalue_idx = col_name_to_idx.get(COL_UNDERVALUE_RATIO)
             cond_fill = PatternFill(fill_type="solid", fgColor="DCE6F1")

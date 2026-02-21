@@ -634,7 +634,18 @@ def main() -> None:
     crawled_count = st.session_state["crawled_count"]
     st.success(f"수집 완료: {len(result_df)}행, 단지 {crawled_count}개")
     st.subheader("수집 결과")
-    st.dataframe(_styled_result_df(result_df), use_container_width=True, hide_index=True)
+    st.dataframe(
+        _styled_result_df(result_df),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            ae.COL_LINK: st.column_config.LinkColumn(
+                "해당단지링크",
+                help="KB 단지 페이지로 이동",
+                display_text="열기",
+            )
+        },
+    )
 
     st.download_button(
         label="엑셀 다운로드",
