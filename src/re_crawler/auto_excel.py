@@ -799,32 +799,6 @@ def _pick_recent_trade_from_rows(
     return best_price, _format_date_floor(best_date, floor_text)
 
 
-def _pick_min_sale_price_excluding_low_floors(rows: list[dict[str, Any]], min_floor_exclusive: int = 2) -> int | None:
-    name_key = "\ubb3c\uac74\uac70\ub798\uba85"
-    cancel_key = "\uacc4\uc57d\ucde8\uc18c\uc5ec\ubd80"
-    floor_key = "\ud574\ub2f9\uce35\uc218"
-    sale_price_key = "\ub9e4\ub9e4\uc2e4\uac70\ub798\uae08\uc561"
-
-    prices: list[int] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        if str(row.get(cancel_key) or "0") == "1":
-            continue
-        if str(row.get(name_key) or "").strip() != "\ub9e4\ub9e4":
-            continue
-        floor_no = _parse_floor_number(row.get(floor_key))
-        if floor_no is None or floor_no <= min_floor_exclusive:
-            continue
-        price = _to_int(row.get(sale_price_key))
-        if price is not None:
-            prices.append(price)
-
-    if not prices:
-        return None
-    return min(prices)
-
-
 def build_dataframe_from_kb(query: str, candidate: KbComplexCandidate, payloads: dict[str, Any]) -> pd.DataFrame:
     info = payloads.get("info") if isinstance(payloads.get("info"), dict) else {}
     main = payloads.get("main") if isinstance(payloads.get("main"), dict) else {}
@@ -909,9 +883,6 @@ def build_dataframe_from_kb(query: str, candidate: KbComplexCandidate, payloads:
         recent_lease_price = None
         recent_rows = recent_deals_by_area.get(area_id, []) if area_id is not None else []
         if isinstance(recent_rows, list) and recent_rows:
-            floor_filtered_min_ask = _pick_min_sale_price_excluding_low_floors(recent_rows, min_floor_exclusive=2)
-            if floor_filtered_min_ask is not None:
-                min_ask_sale = floor_filtered_min_ask
             recent_sale_price, recent_sale_date_floor = _pick_recent_trade_from_rows(
                 recent_rows,
                 trade_name="\ub9e4\ub9e4",
