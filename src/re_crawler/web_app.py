@@ -191,6 +191,24 @@ def _build_label_text(row) -> str:
     return f"{row['complex_name']}\n{built_text} | {hh_text}\n{parking_text} | {hall_text}"
 
 
+def _styled_result_df(df):
+    ratio_col = ae.COL_UNDERVALUE_RATIO
+    if ratio_col not in df.columns:
+        return df
+
+    def _row_style(row):
+        value = row.get(ratio_col)
+        try:
+            ratio = float(str(value).replace("%", "").replace(",", "").strip())
+        except Exception:
+            return [""] * len(row)
+        if 0.0 < ratio <= 100.0:
+            return ["background-color: #DCE6F1; font-weight: 700"] * len(row)
+        return [""] * len(row)
+
+    return df.style.apply(_row_style, axis=1)
+
+
 def _circle_polygon(lat: float, lng: float, radius_m: float, points: int = 72) -> list[list[float]]:
     # Approximate geodesic circle around (lat, lng) in WGS84.
     earth_r = 6378137.0
@@ -529,7 +547,7 @@ def main() -> None:
     crawled_count = st.session_state["crawled_count"]
     st.success(f"수집 완료: {len(result_df)}행, 단지 {crawled_count}개")
     st.subheader("수집 결과")
-    st.dataframe(result_df, use_container_width=True, hide_index=True)
+    st.dataframe(_styled_result_df(result_df), use_container_width=True, hide_index=True)
 
     st.download_button(
         label="엑셀 다운로드",
