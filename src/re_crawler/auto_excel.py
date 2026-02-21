@@ -466,9 +466,29 @@ def fetch_kb_nearby_apartment_candidates(
     max_dong_codes: int | None = None,
     adjacent_dong_extra_m: float = 3000.0,
 ) -> list[KbComplexCandidate]:
+    dong_code = str(seed_main.get("법정동코드") or "").strip()
     seed_lat = _to_float(seed_main.get("wgs84위도"))
     seed_lng = _to_float(seed_main.get("wgs84경도"))
-    dong_code = str(seed_main.get("법정동코드") or "").strip()
+    # Fallback: if seed coords are missing, resolve from same-dong hscm list.
+    if (seed_lat is None or seed_lng is None) and dong_code:
+        seed_url = (
+            f"{KB_API}/land-complex/complexComm/hscmList"
+            f"?%EB%B2%95%EC%A0%95%EB%8F%99%EC%BD%94%EB%93%9C={dong_code}"
+        )
+        seed_payload = _request_json_with_retry(session, seed_url, retries=2)
+        seed_rows = seed_payload.get("dataBody", {}).get("data", []) if isinstance(seed_payload, dict) else []
+        if isinstance(seed_rows, list):
+            for row in seed_rows:
+                if not isinstance(row, dict):
+                    continue
+                cid = _to_int(row.get("단지기본일련번호"))
+                if cid != seed_candidate.complex_id:
+                    continue
+                seed_lat = _to_float(row.get("wgs84위도"))
+                seed_lng = _to_float(row.get("wgs84경도"))
+                if seed_lat is not None and seed_lng is not None:
+                    break
+        _delay()
     if seed_lat is None or seed_lng is None or not dong_code:
         LOGGER.warning(
             "Nearby expansion skipped. missing lat/lng/dong_code for id=%s",
