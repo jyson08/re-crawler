@@ -34,20 +34,40 @@ def _render_map(markers_df):
     )
     map_df = markers_df.copy()
     map_df["color"] = map_df["is_seed"].map(lambda x: [220, 53, 69, 180] if bool(x) else [52, 152, 219, 170])
+    map_df["label"] = map_df["complex_name"].astype(str)
 
-    layer = pdk.Layer(
+    marker_layer = pdk.Layer(
         "ScatterplotLayer",
         data=map_df,
         get_position="[lng, lat]",
-        get_radius=70,
+        get_radius=45,
         get_fill_color="color",
         pickable=True,
+    )
+    text_layer = pdk.Layer(
+        "TextLayer",
+        data=map_df,
+        get_position="[lng, lat]",
+        get_text="label",
+        get_color=[20, 20, 20, 220],
+        get_size=12,
+        get_alignment_baseline="'top'",
+        get_pixel_offset=[0, 10],
+        pickable=False,
     )
     tooltip = {
         "html": "<b>{complex_name}</b><br/>id: {complex_id}<br/>seed: {is_seed}<br/>query: {seed_query}",
         "style": {"backgroundColor": "white", "color": "black"},
     }
-    st.pydeck_chart(pdk.Deck(map_style="mapbox://styles/mapbox/light-v9", initial_view_state=view, layers=[layer], tooltip=tooltip))
+    st.pydeck_chart(
+        pdk.Deck(
+            map_provider="carto",
+            map_style="light",
+            initial_view_state=view,
+            layers=[marker_layer, text_layer],
+            tooltip=tooltip,
+        )
+    )
 
 
 def main() -> None:
@@ -105,9 +125,6 @@ def main() -> None:
 
     st.subheader("단지 위치 지도")
     _render_map(markers_df)
-
-    st.subheader("지도 마커 목록")
-    st.dataframe(markers_df, use_container_width=True, hide_index=True)
 
 
 if __name__ == "__main__":
