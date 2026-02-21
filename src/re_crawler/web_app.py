@@ -247,6 +247,13 @@ def _fmt_far(v) -> str | None:
     return f"{int(round(n))}%"
 
 
+def _fmt_distance_m(v) -> str | None:
+    n = _to_float_safe(v)
+    if n is None:
+        return None
+    return f"{int(round(n))}"
+
+
 def _build_web_display_df(df):
     out = df.copy()
 
@@ -274,6 +281,8 @@ def _build_web_display_df(df):
 
     if ae.COL_FAR in out.columns:
         out[ae.COL_FAR] = out[ae.COL_FAR].map(_fmt_far)
+    if ae.COL_ELEM_DISTANCE in out.columns:
+        out[ae.COL_ELEM_DISTANCE] = out[ae.COL_ELEM_DISTANCE].map(_fmt_distance_m)
 
     return out
 
@@ -407,7 +416,7 @@ def _render_map(markers_df, radius_m: float):
     tooltip = {
         "html": (
             "<b>{complex_name}</b><br/>"
-            "준공연도: {built_year}<br/>"
+            "준공년: {built_year}<br/>"
             "세대수: {households}<br/>"
             "주차대수: {parking}<br/>"
             "현관구조: {hall_type}"

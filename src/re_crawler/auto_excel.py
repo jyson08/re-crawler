@@ -24,9 +24,9 @@ COL_CITY = "\uc2dc"
 COL_GU = "\uad6c"
 COL_DONG = "\ub3d9"
 COL_COMPLEX = "\ub2e8\uc9c0"
-COL_ASSIGNED_ELEM = "\ubc30\uc815\ucd08\ub4f1\ud559\uad50"
-COL_ELEM_DISTANCE = "\ucd08\ub4f1\ud559\uad50\uae4c\uc9c0\uac70\ub9ac(m)"
-COL_BUILT = "\uc900\uacf5\uc5f0\ub3c4(\uc5f0\uc2dd)"
+COL_ASSIGNED_ELEM = "\ubc30\uc815\ucd08"
+COL_ELEM_DISTANCE = "\uac70\ub9ac(m)"
+COL_BUILT = "\uc900\uacf5\ub144"
 COL_AGE = "\ub098\uc774"
 COL_TOTAL_HOUSEHOLDS = "\uc804\uccb4\uc138\ub300\uc218"
 COL_PARKING = "\uc8fc\ucc28\ub300\uc218"
@@ -724,6 +724,12 @@ def _round1(value: float | None) -> float | None:
     return round(value, 1)
 
 
+def _round0(value: float | None) -> int | None:
+    if value is None:
+        return None
+    return int(round(value))
+
+
 def _to_int(value: Any) -> int | None:
     if value in (None, ""):
         return None
@@ -767,6 +773,13 @@ def _format_date_floor(contract_yyyymmdd: Any, floor: Any) -> str | None:
     if date_text and floor_text:
         return f"{date_text}/{floor_text}"
     return date_text or floor_text
+
+
+def _strip_elem_school_suffix(name: Any) -> str | None:
+    text = str(name or "").strip()
+    if not text:
+        return None
+    return re.sub(r"\s*\ucd08\ub4f1\ud559\uad50$", "", text).strip()
 
 
 def _parse_floor_number(floor: Any) -> int | None:
@@ -864,8 +877,8 @@ def build_dataframe_from_kb(query: str, candidate: KbComplexCandidate, payloads:
             return assigned, dist if dist is not None else float("inf")
 
         best_school = sorted([s for s in school_rows if isinstance(s, dict)], key=_school_key)[0]
-        assigned_school_name = best_school.get("\ud559\uad50\uba85")
-        assigned_school_distance = _round1(_to_float(best_school.get("\uac70\ub9ac")))
+        assigned_school_name = _strip_elem_school_suffix(best_school.get("\ud559\uad50\uba85"))
+        assigned_school_distance = _round0(_to_float(best_school.get("\uac70\ub9ac")))
 
     typ_map: dict[int, dict[str, Any]] = {}
     for t in typ_rows:
@@ -1112,6 +1125,11 @@ def save_output(df: pd.DataFrame, query: str, output_dir: str = "./output") -> P
                 for r in range(3, max_row + 1):
                     ws.cell(row=r, column=households_idx).number_format = "#,##0"
 
+            distance_idx = col_name_to_idx.get(COL_ELEM_DISTANCE)
+            if distance_idx is not None:
+                for r in range(3, max_row + 1):
+                    ws.cell(row=r, column=distance_idx).number_format = "0"
+
             # Make link column a clickable hyperlink in Excel.
             link_idx = col_name_to_idx.get(COL_LINK)
             if link_idx is not None:
@@ -1335,7 +1353,7 @@ def preview_candidates(
                     "시": city,
                     "구": gu,
                     "동": dong,
-                    "준공연도": built_year,
+                    "준공년": built_year,
                     "세대수": households,
                     "주차대수": parking_text,
                     "현관구조": hall_type,
