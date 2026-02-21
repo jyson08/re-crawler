@@ -300,7 +300,7 @@ def _styled_result_df(df):
         ratio = _to_float_safe(raw_df.at[row.name, ratio_col]) if row.name in raw_df.index else None
         if ratio is None:
             return [""] * len(display_df.columns)
-        if -100.0 < ratio <= 0.0:
+        if ratio < 0.0:
             return ["background-color: #DCE6F1; font-weight: 700"] * len(display_df.columns)
         return [""] * len(display_df.columns)
 

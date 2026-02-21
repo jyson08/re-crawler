@@ -1151,7 +1151,7 @@ def save_output(df: pd.DataFrame, query: str, output_dir: str = "./output") -> P
                     undervalue_val = _to_float(ws.cell(row=r, column=undervalue_idx).value)
                     if undervalue_val is None:
                         continue
-                    if -100.0 < undervalue_val <= 0.0:
+                    if undervalue_val < 0.0:
                         for c in range(1, len(df.columns) + 1):
                             cell = ws.cell(row=r, column=c)
                             cell.fill = cond_fill
