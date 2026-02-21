@@ -464,7 +464,7 @@ def fetch_kb_nearby_apartment_candidates(
     seed_main: dict[str, Any],
     radius_m: float = 500.0,
     max_dong_codes: int | None = None,
-    adjacent_dong_extra_m: float = 800.0,
+    adjacent_dong_extra_m: float = 3000.0,
 ) -> list[KbComplexCandidate]:
     seed_lat = _to_float(seed_main.get("wgs84위도"))
     seed_lng = _to_float(seed_main.get("wgs84경도"))
