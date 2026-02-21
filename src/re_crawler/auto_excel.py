@@ -939,7 +939,7 @@ def build_dataframe_from_kb(query: str, candidate: KbComplexCandidate, payloads:
                 COL_RECENT_SALE_DATE_FLOOR: recent_sale_date_floor,
                 COL_SALE: sale,
                 COL_MIN_ASK_SALE: min_ask_sale,
-                COL_UNDERVALUE_RATIO: _calc_undervalue_ratio(recent_sale_price, sale),
+                COL_UNDERVALUE_RATIO: _calc_undervalue_ratio(min_ask_sale, sale),
                 COL_RECENT_LEASE: recent_lease_price,
                 COL_LEASE: lease,
                 COL_LEASE_RATIO: _calc_lease_ratio(lease, sale),
@@ -1082,18 +1082,16 @@ def save_output(df: pd.DataFrame, query: str, output_dir: str = "./output") -> P
                 for r in range(3, max_row + 1):
                     ws.cell(row=r, column=households_idx).number_format = "#,##0"
 
-            # Highlight rows where recent sale transaction <= current sale price.
-            recent_sale_idx = col_name_to_idx.get(COL_RECENT_SALE)
-            sale_idx = col_name_to_idx.get(COL_SALE)
+            # Highlight rows where undervalue ratio is <= 100%.
+            undervalue_idx = col_name_to_idx.get(COL_UNDERVALUE_RATIO)
             cond_fill = PatternFill(fill_type="solid", fgColor="DCE6F1")
             cond_font = Font(bold=True)
-            if recent_sale_idx is not None and sale_idx is not None:
+            if undervalue_idx is not None:
                 for r in range(3, max_row + 1):
-                    recent_val = _to_float(ws.cell(row=r, column=recent_sale_idx).value)
-                    sale_val = _to_float(ws.cell(row=r, column=sale_idx).value)
-                    if recent_val is None or sale_val is None:
+                    undervalue_val = _to_float(ws.cell(row=r, column=undervalue_idx).value)
+                    if undervalue_val is None:
                         continue
-                    if recent_val <= sale_val:
+                    if undervalue_val <= 100.0:
                         for c in range(1, len(df.columns) + 1):
                             cell = ws.cell(row=r, column=c)
                             cell.fill = cond_fill
