@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import sys
+import inspect
 from pathlib import Path
 
 import pydeck as pdk
@@ -20,6 +21,20 @@ def _save_stem_from_query(raw_query: str) -> str:
     if not queries:
         return "complex"
     return queries[0] if len(queries) == 1 else f"{queries[0]}_외{len(queries)-1}"
+
+
+def _call_collect_dataset_compat(**kwargs):
+    fn = ae.collect_dataset
+    sig = inspect.signature(fn)
+    allowed = {k: v for k, v in kwargs.items() if k in sig.parameters}
+    out = fn(**allowed)
+    if isinstance(out, tuple):
+        if len(out) == 5:
+            return out
+        if len(out) == 4:
+            result_df, selected_info, crawled_info, markers_df = out
+            return result_df, selected_info, crawled_info, markers_df, []
+    raise RuntimeError("collect_dataset returned unexpected shape")
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -238,7 +253,7 @@ def main() -> None:
                     )
                 else:
                     # Backward-compatible fallback when older module is loaded on cloud.
-                    result_df, _selected_info, crawled_info, markers_df, _metrics = ae.collect_dataset(
+                    result_df, _selected_info, crawled_info, markers_df, _metrics = _call_collect_dataset_compat(
                         raw_query=query.strip(),
                         radius_m=float(radius_m),
                         min_households=int(min_households),
@@ -322,7 +337,7 @@ def main() -> None:
         progress_text = st.empty()
         with st.spinner("후보 단지 수집 중입니다..."):
             try:
-                result_df, _selected_info, crawled_info, markers_df, _metrics = ae.collect_dataset(
+                result_df, _selected_info, crawled_info, markers_df, _metrics = _call_collect_dataset_compat(
                     raw_query=st.session_state["query"],
                     radius_m=float(st.session_state["radius_m"]),
                     min_households=int(st.session_state["min_households"]),
