@@ -191,22 +191,109 @@ def _build_label_text(row) -> str:
     return f"{row['complex_name']}\n{built_text} | {hh_text}\n{parking_text} | {hall_text}"
 
 
+def _to_float_safe(v) -> float | None:
+    try:
+        if v is None:
+            return None
+        return float(str(v).replace("%", "").replace(",", "").strip())
+    except Exception:
+        return None
+
+
+def _to_int_safe(v) -> int | None:
+    try:
+        if v is None:
+            return None
+        return int(float(str(v).replace(",", "").strip()))
+    except Exception:
+        return None
+
+
+def _fmt_money(v) -> str | None:
+    n = _to_int_safe(v)
+    if n is None:
+        return None
+    return f"{n:,}"
+
+
+def _fmt_households(v) -> str | None:
+    n = _to_int_safe(v)
+    if n is None:
+        return None
+    return f"{n:,}"
+
+
+def _fmt_area(v) -> str | None:
+    n = _to_float_safe(v)
+    if n is None:
+        return None
+    text = f"{n:.1f}"
+    if 0 <= n < 10 and not text.startswith("0"):
+        text = f"0{text}"
+    return text
+
+
+def _fmt_ratio(v) -> str | None:
+    n = _to_float_safe(v)
+    if n is None:
+        return None
+    return f"{n:.1f}%"
+
+
+def _fmt_far(v) -> str | None:
+    n = _to_float_safe(v)
+    if n is None:
+        return None
+    return f"{int(round(n))}%"
+
+
+def _build_web_display_df(df):
+    out = df.copy()
+
+    money_cols = [
+        ae.COL_RECENT_SALE,
+        ae.COL_SALE,
+        ae.COL_MIN_ASK_SALE,
+        ae.COL_RECENT_LEASE,
+        ae.COL_LEASE,
+    ]
+    for c in money_cols:
+        if c in out.columns:
+            out[c] = out[c].map(_fmt_money)
+
+    if ae.COL_TOTAL_HOUSEHOLDS in out.columns:
+        out[ae.COL_TOTAL_HOUSEHOLDS] = out[ae.COL_TOTAL_HOUSEHOLDS].map(_fmt_households)
+
+    for c in [ae.COL_SUPPLY, ae.COL_PYUNG, ae.COL_EXCLUSIVE]:
+        if c in out.columns:
+            out[c] = out[c].map(_fmt_area)
+
+    for c in [ae.COL_UNDERVALUE_RATIO, ae.COL_LEASE_RATIO]:
+        if c in out.columns:
+            out[c] = out[c].map(_fmt_ratio)
+
+    if ae.COL_FAR in out.columns:
+        out[ae.COL_FAR] = out[ae.COL_FAR].map(_fmt_far)
+
+    return out
+
+
 def _styled_result_df(df):
+    raw_df = df
+    display_df = _build_web_display_df(df)
     ratio_col = ae.COL_UNDERVALUE_RATIO
-    if ratio_col not in df.columns:
-        return df
+    if ratio_col not in raw_df.columns:
+        return display_df
 
     def _row_style(row):
-        value = row.get(ratio_col)
-        try:
-            ratio = float(str(value).replace("%", "").replace(",", "").strip())
-        except Exception:
-            return [""] * len(row)
+        ratio = _to_float_safe(raw_df.at[row.name, ratio_col]) if row.name in raw_df.index else None
+        if ratio is None:
+            return [""] * len(display_df.columns)
         if 0.0 < ratio <= 100.0:
-            return ["background-color: #DCE6F1; font-weight: 700"] * len(row)
-        return [""] * len(row)
+            return ["background-color: #DCE6F1; font-weight: 700"] * len(display_df.columns)
+        return [""] * len(display_df.columns)
 
-    return df.style.apply(_row_style, axis=1)
+    return display_df.style.apply(_row_style, axis=1)
 
 
 def _circle_polygon(lat: float, lng: float, radius_m: float, points: int = 72) -> list[list[float]]:
