@@ -382,9 +382,6 @@ def main() -> None:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
-    st.subheader("단지 위치 지도")
-    _render_map(markers_df, radius_m=float(st.session_state.get("radius_m", radius_m)))
-
 
 if __name__ == "__main__":
     main()
