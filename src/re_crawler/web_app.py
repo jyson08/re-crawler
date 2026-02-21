@@ -12,7 +12,14 @@ SRC_DIR = Path(__file__).resolve().parents[1]
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from re_crawler.auto_excel import collect_dataset, create_kb_session, fetch_kb_complex_index, save_output, split_queries
+from re_crawler.auto_excel import (
+    collect_dataset,
+    create_kb_session,
+    fetch_kb_complex_index,
+    preview_candidates,
+    save_output,
+    split_queries,
+)
 
 
 def _save_stem_from_query(raw_query: str) -> str:
@@ -182,7 +189,7 @@ def main() -> None:
         query = st.text_input("단지명", value="백련산SK뷰아이파크")
         radius_m = st.number_input("반경(m)", min_value=100, max_value=5000, value=500, step=100)
         min_households = st.number_input("최소 세대수", min_value=1, max_value=10000, value=290, step=10)
-        run_clicked = st.button("크롤링 실행", type="primary")
+        preview_clicked = st.button("후보 조회", type="primary")
     if "has_result" not in st.session_state:
         st.session_state["has_result"] = False
 
@@ -214,7 +221,7 @@ def main() -> None:
             progress_bar.progress(pct, text=f"[{q}] {current}/{total} 처리 중")
             progress_text.caption(f"현재 단지: {name}")
 
-    if run_clicked:
+    if preview_clicked:
         if not query.strip():
             st.error("단지명을 입력해 주세요.")
             return
@@ -225,11 +232,10 @@ def main() -> None:
             try:
                 progress_bar.progress(3, text="단지 인덱스 캐시 확인 중...")
                 index_items = _cached_kb_index()
-                result_df, _selected_info, crawled_info, markers_df, _metrics = collect_dataset(
+                preview_df, preview_markers_df, candidate_ids, _selected = preview_candidates(
                     raw_query=query.strip(),
                     radius_m=float(radius_m),
                     min_households=int(min_households),
-                    progress_callback=_on_progress,
                     fast_mode=True,
                     max_dong_codes=None,
                     index_items=index_items,
@@ -240,9 +246,75 @@ def main() -> None:
                 progress_text.empty()
                 st.error(str(exc))
                 return
+        progress_bar.progress(100, text="후보 조회 완료")
+        st.session_state["preview_ready"] = True
+        st.session_state["preview_df"] = preview_df
+        preview_select_df = preview_df.copy()
+        preview_select_df.insert(0, "수집", True)
+        st.session_state["preview_select_df"] = preview_select_df
+        st.session_state["preview_markers_df"] = preview_markers_df
+        st.session_state["candidate_ids"] = candidate_ids
+        st.session_state["query"] = query.strip()
+        st.session_state["dong"] = dong.strip()
+        st.session_state["radius_m"] = float(radius_m)
+        st.session_state["min_households"] = int(min_households)
+        st.session_state["has_result"] = False
+
+    if not st.session_state.get("preview_ready", False):
+        st.caption("왼쪽에서 조건 입력 후 `후보 조회`를 눌러 후보 단지를 먼저 확인하세요.")
+        return
+
+    st.subheader("후보 단지 목록")
+    edited_preview_df = st.data_editor(
+        st.session_state["preview_select_df"],
+        use_container_width=True,
+        hide_index=True,
+        key="preview_editor",
+        column_config={
+            "수집": st.column_config.CheckboxColumn("수집", help="체크된 단지만 수집"),
+        },
+        disabled=[c for c in st.session_state["preview_select_df"].columns if c != "수집"],
+    )
+    st.session_state["preview_select_df"] = edited_preview_df
+
+    selected_ids = (
+        edited_preview_df.loc[edited_preview_df["수집"] == True, "complex_id"]
+        .astype(int)
+        .tolist()
+    )
+    st.caption(f"선택된 후보: {len(selected_ids)}개")
+
+    st.subheader("후보 단지 지도")
+    _render_map(st.session_state["preview_markers_df"], radius_m=float(st.session_state.get("radius_m", radius_m)))
+
+    collect_clicked = st.button("수집하기")
+    if collect_clicked:
+        if not selected_ids:
+            st.warning("수집할 후보 단지를 1개 이상 선택해 주세요.")
+            return
+        progress_bar = st.progress(0, text="수집 준비 중...")
+        progress_text = st.empty()
+        with st.spinner("후보 단지 수집 중입니다..."):
+            try:
+                result_df, _selected_info, crawled_info, markers_df, _metrics = collect_dataset(
+                    raw_query=st.session_state["query"],
+                    radius_m=float(st.session_state["radius_m"]),
+                    min_households=int(st.session_state["min_households"]),
+                    progress_callback=_on_progress,
+                    fast_mode=True,
+                    max_dong_codes=None,
+                    index_items=_cached_kb_index(),
+                    preferred_dong=(st.session_state.get("dong") or None),
+                    candidate_ids=selected_ids,
+                )
+            except ValueError as exc:
+                progress_bar.empty()
+                progress_text.empty()
+                st.error(str(exc))
+                return
         progress_bar.progress(100, text="수집 완료")
 
-        save_stem = _save_stem_from_query(query.strip())
+        save_stem = _save_stem_from_query(st.session_state["query"])
         out_path = save_output(result_df, query=save_stem)
         file_bytes = Path(out_path).read_bytes()
         st.session_state["has_result"] = True
@@ -253,14 +325,12 @@ def main() -> None:
         st.session_state["download_name"] = Path(out_path).name
 
     if not st.session_state.get("has_result", False):
-        st.caption("왼쪽에서 단지명과 옵션을 입력한 뒤 `크롤링 실행`을 누르세요.")
         return
 
     result_df = st.session_state["result_df"]
     markers_df = st.session_state["markers_df"]
     crawled_count = st.session_state["crawled_count"]
     st.success(f"수집 완료: {len(result_df)}행, 단지 {crawled_count}개")
-
     st.subheader("수집 결과")
     st.dataframe(result_df, use_container_width=True, hide_index=True)
 
@@ -272,7 +342,7 @@ def main() -> None:
     )
 
     st.subheader("단지 위치 지도")
-    _render_map(markers_df, radius_m=float(radius_m))
+    _render_map(markers_df, radius_m=float(st.session_state.get("radius_m", radius_m)))
 
 
 if __name__ == "__main__":
