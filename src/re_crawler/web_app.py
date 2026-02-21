@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 import pydeck as pdk
 import streamlit as st
+
+# Streamlit Cloud runs this file directly, so ensure `src` is on sys.path.
+SRC_DIR = Path(__file__).resolve().parents[1]
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
 
 from re_crawler.auto_excel import collect_dataset, save_output, split_queries
 
