@@ -17,6 +17,8 @@ import requests
 from openpyxl.styles import Border, Font, PatternFill, Side
 
 LOGGER = logging.getLogger(__name__)
+DELAY_MIN_SEC = 0.1
+DELAY_MAX_SEC = 0.3
 
 COL_CITY = "\uc2dc"
 COL_GU = "\uad6c"
@@ -122,7 +124,17 @@ def setup_logging(level: str) -> None:
 
 
 def _delay() -> None:
-    time.sleep(random.uniform(0.5, 1.5))
+    if DELAY_MAX_SEC <= 0:
+        return
+    low = max(0.0, DELAY_MIN_SEC)
+    high = max(low, DELAY_MAX_SEC)
+    time.sleep(random.uniform(low, high))
+
+
+def set_delay_range(min_sec: float, max_sec: float) -> None:
+    global DELAY_MIN_SEC, DELAY_MAX_SEC
+    DELAY_MIN_SEC = max(0.0, float(min_sec))
+    DELAY_MAX_SEC = max(DELAY_MIN_SEC, float(max_sec))
 
 
 def _normalize_text(text: str) -> str:
@@ -433,6 +445,7 @@ def fetch_kb_nearby_apartment_candidates(
     seed_candidate: KbComplexCandidate,
     seed_main: dict[str, Any],
     radius_m: float = 500.0,
+    max_dong_codes: int | None = None,
 ) -> list[KbComplexCandidate]:
     seed_lat = _to_float(seed_main.get("wgs84위도"))
     seed_lng = _to_float(seed_main.get("wgs84경도"))
@@ -461,6 +474,9 @@ def fetch_kb_nearby_apartment_candidates(
         dong_codes = [dong_code]
     elif dong_code not in dong_codes:
         dong_codes.append(dong_code)
+    if max_dong_codes is not None and max_dong_codes > 0 and len(dong_codes) > max_dong_codes:
+        ordered = [dong_code] + [c for c in dong_codes if c != dong_code]
+        dong_codes = ordered[:max_dong_codes]
 
     scored: list[tuple[float, KbComplexCandidate]] = []
     for code in dong_codes:
@@ -992,7 +1008,14 @@ def collect_dataset(
     radius_m: float = 500.0,
     min_households: int = 290,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    fast_mode: bool = True,
+    max_dong_codes: int | None = 8,
 ) -> tuple[pd.DataFrame, list[tuple[str, KbComplexCandidate]], list[KbComplexCandidate], pd.DataFrame, list[QueryMetric]]:
+    if fast_mode:
+        set_delay_range(0.05, 0.15)
+    else:
+        set_delay_range(0.5, 1.5)
+
     queries = split_queries(raw_query)
     if not queries:
         raise ValueError("단지명이 비어 있습니다.")
@@ -1009,6 +1032,8 @@ def collect_dataset(
     marker_ids: set[int] = set()
     processed_complex_ids: set[int] = set()
     metrics: list[QueryMetric] = []
+    main_cache: dict[int, dict[str, Any]] = {}
+    payload_cache: dict[int, dict[str, Any]] = {}
 
     for query in queries:
         query_started_at = datetime.now()
@@ -1047,13 +1072,19 @@ def collect_dataset(
         selected_info.append((query, seed))
         LOGGER.info("Selected seed candidate: id=%s name=%s score=%.1f", seed.complex_id, seed.name, seed.score)
 
-        seed_payloads = fetch_kb_complex_payloads(session, seed.complex_id)
+        seed_payloads = payload_cache.get(seed.complex_id)
+        if seed_payloads is None:
+            seed_payloads = fetch_kb_complex_payloads(session, seed.complex_id)
+            payload_cache[seed.complex_id] = seed_payloads
         seed_main = seed_payloads.get("main") if isinstance(seed_payloads.get("main"), dict) else {}
+        if seed_main:
+            main_cache[seed.complex_id] = seed_main
         nearby_candidates = fetch_kb_nearby_apartment_candidates(
             session=session,
             seed_candidate=seed,
             seed_main=seed_main,
             radius_m=radius_m,
+            max_dong_codes=max_dong_codes,
         )
         LOGGER.info(
             "Nearby apartment candidates within %.0fm from seed(id=%s): %d",
@@ -1071,7 +1102,11 @@ def collect_dataset(
             if cand.complex_id == seed.complex_id:
                 main_data = seed_main
             else:
-                main_data = fetch_kb_complex_main(session, cand.complex_id) or {}
+                main_data = main_cache.get(cand.complex_id)
+                if main_data is None:
+                    main_data = fetch_kb_complex_main(session, cand.complex_id) or {}
+                    if main_data:
+                        main_cache[cand.complex_id] = main_data
 
             households = _to_int(main_data.get("총세대수"))
             if households is None or households < min_households:
@@ -1114,7 +1149,10 @@ def collect_dataset(
             if cand.complex_id == seed.complex_id:
                 payloads = seed_payloads
             else:
-                payloads = fetch_kb_complex_payloads(session, cand.complex_id)
+                payloads = payload_cache.get(cand.complex_id)
+                if payloads is None:
+                    payloads = fetch_kb_complex_payloads(session, cand.complex_id)
+                    payload_cache[cand.complex_id] = payloads
 
             df = build_dataframe_from_kb(query=query, candidate=cand, payloads=payloads)
             if df.empty:

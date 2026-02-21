@@ -11,7 +11,7 @@ SRC_DIR = Path(__file__).resolve().parents[1]
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from re_crawler.auto_excel import collect_dataset, save_output, save_query_metrics, split_queries
+from re_crawler.auto_excel import collect_dataset, save_output, split_queries
 
 
 def _save_stem_from_query(raw_query: str) -> str:
@@ -77,10 +77,7 @@ def _render_map(markers_df):
             "준공연도: {built_year}<br/>"
             "세대수: {households}<br/>"
             "주차대수: {parking}<br/>"
-            "현관구조: {hall_type}<br/>"
-            "id: {complex_id}<br/>"
-            "seed: {is_seed}<br/>"
-            "query: {seed_query}"
+            "현관구조: {hall_type}"
         ),
         "style": {"backgroundColor": "white", "color": "black"},
     }
@@ -103,7 +100,7 @@ def main() -> None:
     with st.sidebar:
         st.subheader("수집 옵션")
         query = st.text_input("단지명", value="백련산SK뷰아이파크")
-        radius_m = st.number_input("반경(m)", min_value=100, max_value=5000, value=1000, step=100)
+        radius_m = st.number_input("반경(m)", min_value=100, max_value=5000, value=500, step=100)
         min_households = st.number_input("최소 세대수", min_value=1, max_value=10000, value=290, step=10)
         run_clicked = st.button("크롤링 실행", type="primary")
 
@@ -138,11 +135,13 @@ def main() -> None:
 
     with st.spinner("데이터 수집 중입니다..."):
         try:
-            result_df, selected_info, crawled_info, markers_df, metrics = collect_dataset(
+            result_df, _selected_info, crawled_info, markers_df, _metrics = collect_dataset(
                 raw_query=query.strip(),
                 radius_m=float(radius_m),
                 min_households=int(min_households),
                 progress_callback=_on_progress,
+                fast_mode=True,
+                max_dong_codes=8,
             )
         except ValueError as exc:
             progress_bar.empty()
@@ -152,13 +151,6 @@ def main() -> None:
     progress_bar.progress(100, text="수집 완료")
 
     st.success(f"수집 완료: {len(result_df)}행, 단지 {len(crawled_info)}개")
-
-    selected_rows = [
-        {"입력쿼리": q, "선택단지ID": c.complex_id, "선택단지명": c.name, "유사도점수": round(c.score, 1)}
-        for q, c in selected_info
-    ]
-    st.subheader("선택된 시드 단지")
-    st.dataframe(selected_rows, use_container_width=True, hide_index=True)
 
     st.subheader("수집 결과")
     st.dataframe(result_df, use_container_width=True, hide_index=True)
@@ -172,27 +164,6 @@ def main() -> None:
         file_name=Path(out_path).name,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
-    st.caption(f"서버 저장 경로: `{out_path}`")
-    metric_path = save_query_metrics(metrics)
-    st.caption(f"쿼리 메트릭 로그: `{metric_path}`")
-
-    metric_rows = [
-        {
-            "query": m.query,
-            "elapsed_sec": m.elapsed_sec,
-            "seed_complex_id": m.seed_complex_id,
-            "seed_complex_name": m.seed_complex_name,
-            "nearby_candidates": m.nearby_candidates,
-            "target_candidates": m.target_candidates,
-            "attempted_complexes": m.attempted_complexes,
-            "success_complexes": m.success_complexes,
-            "failed_complexes": m.failed_complexes,
-            "failure_rate_pct": m.failure_rate_pct,
-        }
-        for m in metrics
-    ]
-    st.subheader("쿼리 처리 로그")
-    st.dataframe(metric_rows, use_container_width=True, hide_index=True)
 
     st.subheader("단지 위치 지도")
     _render_map(markers_df)
