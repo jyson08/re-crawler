@@ -3,10 +3,12 @@ from __future__ import annotations
 import math
 import sys
 import inspect
+import os
 from pathlib import Path
 
 import pydeck as pdk
 import streamlit as st
+import streamlit.components.v1 as components
 
 # Streamlit Cloud runs this file directly, so ensure `src` is on sys.path.
 SRC_DIR = Path(__file__).resolve().parents[1]
@@ -14,6 +16,77 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 import re_crawler.auto_excel as ae
+
+ADSENSE_CLIENT = "ca-pub-3193725081286573"
+ADSENSE_SLOT_TOP = os.getenv("ADSENSE_SLOT_TOP", "").strip()
+ADSENSE_SLOT_MID = os.getenv("ADSENSE_SLOT_MID", "").strip()
+ADSENSE_SLOT_BOTTOM = os.getenv("ADSENSE_SLOT_BOTTOM", "").strip()
+
+
+def _inject_adsense_script() -> None:
+    components.html(
+        f"""
+        <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client={ADSENSE_CLIENT}" crossorigin="anonymous"></script>
+        """,
+        height=0,
+    )
+
+
+def _render_adsense_slot(slot_id: str, height: int = 120) -> None:
+    if not slot_id:
+        return
+    components.html(
+        f"""
+        <ins class="adsbygoogle"
+             style="display:block"
+             data-ad-client="{ADSENSE_CLIENT}"
+             data-ad-slot="{slot_id}"
+             data-ad-format="auto"
+             data-full-width-responsive="true"></ins>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({{}});
+        </script>
+        """,
+        height=height,
+    )
+
+
+def _render_info_pages(page: str) -> None:
+    if page == "About":
+        st.subheader("서비스 소개")
+        st.markdown(
+            """
+            이 서비스는 입력한 단지를 기준으로 주변 단지 데이터를 수집해 비교표와 엑셀을 생성합니다.
+            주요 기능은 후보 단지 선택 수집, 지도 확인, 엑셀 다운로드입니다.
+            """
+        )
+    elif page == "이용안내":
+        st.subheader("이용안내")
+        st.markdown(
+            """
+            1. 동(선택)과 단지명을 입력하고 `후보 조회`를 누릅니다.  
+            2. 후보 목록에서 수집할 단지를 체크합니다.  
+            3. `수집하기`를 눌러 결과표를 확인하고 엑셀을 다운로드합니다.
+            """
+        )
+    elif page == "개인정보처리방침":
+        st.subheader("개인정보처리방침")
+        st.markdown(
+            """
+            - 본 서비스는 사용자가 입력한 검색어를 수집 처리 목적으로만 사용합니다.  
+            - 입력값과 결과 파일은 운영 및 오류 분석 목적 범위에서만 보관될 수 있습니다.  
+            - 개인정보 관련 문의는 아래 문의 채널로 요청해 주세요.
+            """
+        )
+    elif page == "문의":
+        st.subheader("문의")
+        st.markdown(
+            """
+            - 이메일: `your-email@example.com`  
+            - 이슈 제보: GitHub Issues  
+            - 응답 시간: 영업일 기준 1~3일
+            """
+        )
 
 
 def _save_stem_from_query(raw_query: str) -> str:
@@ -188,16 +261,33 @@ def _render_map(markers_df, radius_m: float):
 
 def main() -> None:
     st.set_page_config(page_title="KB 부동산 단지 크롤링", layout="wide")
+    _inject_adsense_script()
     st.title("KB 부동산 단지 크롤링")
 
     with st.sidebar:
-        st.subheader("수집 옵션")
-        dong = st.text_input("동(읍/면/동)", value="")
-        st.caption("동명이인 단지가 많으면 동명을 먼저 입력하세요. 예: 응암동")
-        query = st.text_input("단지명", value="백련산SK뷰아이파크")
-        radius_m = st.number_input("반경(m)", min_value=100, max_value=5000, value=500, step=100)
-        min_households = st.number_input("최소 세대수", min_value=1, max_value=10000, value=290, step=10)
-        preview_clicked = st.button("후보 조회", type="primary")
+        page = st.radio("메뉴", ["크롤링", "About", "이용안내", "개인정보처리방침", "문의"], index=0)
+        if page == "크롤링":
+            st.subheader("수집 옵션")
+            dong = st.text_input("동(읍/면/동)", value="")
+            st.caption("동명이인 단지가 많으면 동명을 먼저 입력하세요. 예: 응암동")
+            query = st.text_input("단지명", value="백련산SK뷰아이파크")
+            radius_m = st.number_input("반경(m)", min_value=100, max_value=5000, value=500, step=100)
+            min_households = st.number_input("최소 세대수", min_value=1, max_value=10000, value=290, step=10)
+            preview_clicked = st.button("후보 조회", type="primary")
+        else:
+            dong = ""
+            query = ""
+            radius_m = 500
+            min_households = 290
+            preview_clicked = False
+
+    if page != "크롤링":
+        _render_adsense_slot(ADSENSE_SLOT_TOP, height=120)
+        _render_info_pages(page)
+        _render_adsense_slot(ADSENSE_SLOT_BOTTOM, height=120)
+        return
+
+    _render_adsense_slot(ADSENSE_SLOT_TOP, height=120)
     if "has_result" not in st.session_state:
         st.session_state["has_result"] = False
     has_preview_api = hasattr(ae, "preview_candidates")
@@ -330,6 +420,7 @@ def main() -> None:
 
     st.subheader("후보 단지 지도")
     _render_map(st.session_state["preview_markers_df"], radius_m=float(st.session_state.get("radius_m", radius_m)))
+    _render_adsense_slot(ADSENSE_SLOT_MID, height=120)
 
     collect_clicked = st.button("수집하기")
     if collect_clicked:
@@ -384,6 +475,7 @@ def main() -> None:
         file_name=st.session_state["download_name"],
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+    _render_adsense_slot(ADSENSE_SLOT_BOTTOM, height=120)
 
 
 if __name__ == "__main__":
