@@ -1156,25 +1156,30 @@ def save_output(df: pd.DataFrame, query: str, output_dir: str = "./output") -> P
                     cell.style = "Hyperlink"
 
             # Highlight rows where any gap ratio is negative, or lease ratio >= 65%.
+            # Keep row background only; emphasize cause cells with blue + bold text.
             gap_sale_idx = col_name_to_idx.get(COL_UNDERVALUE_RATIO)
             gap_lease_idx = col_name_to_idx.get(COL_GAP_RATIO_LEASE)
             lease_ratio_idx = col_name_to_idx.get(COL_LEASE_RATIO)
             cond_fill = PatternFill(fill_type="solid", fgColor="DCE6F1")
-            cond_font = Font(bold=True)
+            cause_font = Font(bold=True, color="1F4E78")
             if gap_sale_idx is not None or gap_lease_idx is not None or lease_ratio_idx is not None:
                 for r in range(3, max_row + 1):
                     gap_sale_val = _to_float(ws.cell(row=r, column=gap_sale_idx).value) if gap_sale_idx is not None else None
                     gap_lease_val = _to_float(ws.cell(row=r, column=gap_lease_idx).value) if gap_lease_idx is not None else None
                     lease_ratio_val = _to_float(ws.cell(row=r, column=lease_ratio_idx).value) if lease_ratio_idx is not None else None
-                    if (
-                        (gap_sale_val is not None and gap_sale_val < 0.0)
-                        or (gap_lease_val is not None and gap_lease_val < 0.0)
-                        or (lease_ratio_val is not None and lease_ratio_val >= 65.0)
-                    ):
+                    sale_hit = gap_sale_val is not None and gap_sale_val < 0.0
+                    lease_hit = gap_lease_val is not None and gap_lease_val < 0.0
+                    ratio_hit = lease_ratio_val is not None and lease_ratio_val >= 65.0
+                    if sale_hit or lease_hit or ratio_hit:
                         for c in range(1, len(df.columns) + 1):
                             cell = ws.cell(row=r, column=c)
                             cell.fill = cond_fill
-                            cell.font = cond_font
+                        if sale_hit and gap_sale_idx is not None:
+                            ws.cell(row=r, column=gap_sale_idx).font = cause_font
+                        if lease_hit and gap_lease_idx is not None:
+                            ws.cell(row=r, column=gap_lease_idx).font = cause_font
+                        if ratio_hit and lease_ratio_idx is not None:
+                            ws.cell(row=r, column=lease_ratio_idx).font = cause_font
 
             # Thick right border on group boundaries for the whole table.
             groups = [group_map.get(c, "") for c in df.columns]

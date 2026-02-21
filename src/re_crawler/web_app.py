@@ -310,10 +310,24 @@ def _styled_result_df(df):
             or (lease_gap is not None and lease_gap < 0.0)
             or (lease_ratio is not None and lease_ratio >= 65.0)
         ):
-            return ["background-color: #DCE6F1; font-weight: 700"] * len(display_df.columns)
+            return ["background-color: #DCE6F1"] * len(display_df.columns)
         return [""] * len(display_df.columns)
 
-    return display_df.style.apply(_row_style, axis=1)
+    def _cause_style(row):
+        styles = [""] * len(display_df.columns)
+        idx_map = {c: i for i, c in enumerate(display_df.columns)}
+        sale_gap = _to_float_safe(raw_df.at[row.name, sale_gap_col]) if (row.name in raw_df.index and sale_gap_col in raw_df.columns) else None
+        lease_gap = _to_float_safe(raw_df.at[row.name, lease_gap_col]) if (row.name in raw_df.index and lease_gap_col in raw_df.columns) else None
+        lease_ratio = _to_float_safe(raw_df.at[row.name, lease_ratio_col]) if (row.name in raw_df.index and lease_ratio_col in raw_df.columns) else None
+        if sale_gap is not None and sale_gap < 0.0 and sale_gap_col in idx_map:
+            styles[idx_map[sale_gap_col]] = "color: #1F4E78; font-weight: 700"
+        if lease_gap is not None and lease_gap < 0.0 and lease_gap_col in idx_map:
+            styles[idx_map[lease_gap_col]] = "color: #1F4E78; font-weight: 700"
+        if lease_ratio is not None and lease_ratio >= 65.0 and lease_ratio_col in idx_map:
+            styles[idx_map[lease_ratio_col]] = "color: #1F4E78; font-weight: 700"
+        return styles
+
+    return display_df.style.apply(_row_style, axis=1).apply(_cause_style, axis=1)
 
 
 def _circle_polygon(lat: float, lng: float, radius_m: float, points: int = 72) -> list[list[float]]:
