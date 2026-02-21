@@ -42,7 +42,7 @@ COL_RECENT_SALE = "\ucd5c\uadfc\uc2e4\uac70\ub798\uac00(\ub9e4\ub9e4)"
 COL_RECENT_SALE_DATE_FLOOR = "\ub0a0\uc9dc/\uce35"
 COL_SALE = "KB\uc2dc\uc138"
 COL_MIN_ASK_SALE = "\ucd5c\uc800\ub9e4\ubb3c\uac00(\ub9e4\ub9e4)"
-COL_UNDERVALUE_RATIO = "\uc800\ud3c9\uac00%"
+COL_UNDERVALUE_RATIO = "\uad34\ub9ac\uc728%"
 COL_RECENT_LEASE = "\ucd5c\uadfc\uc2e4\uac70\ub798\uac00(\uc804\uc138)"
 COL_LEASE = "KB\uc804\uc138"
 COL_LEASE_RATIO = "\uc804\uc138\uac00\uc728"
@@ -754,7 +754,7 @@ def _calc_lease_ratio(lease_price: int | None, sale_price: int | None) -> float 
 def _calc_undervalue_ratio(recent_sale_price: int | None, kb_sale_price: int | None) -> float | None:
     if recent_sale_price is None or kb_sale_price in (None, 0):
         return None
-    return round((recent_sale_price / kb_sale_price) * 100, 1)
+    return round(((recent_sale_price / kb_sale_price) * 100.0) - 100.0, 1)
 
 
 def _format_date_floor(contract_yyyymmdd: Any, floor: Any) -> str | None:
@@ -1106,7 +1106,7 @@ def save_output(df: pd.DataFrame, query: str, output_dir: str = "./output") -> P
                 if ratio_idx is None:
                     continue
                 for r in range(3, max_row + 1):
-                    ws.cell(row=r, column=ratio_idx).number_format = '0.0"%"'
+                    ws.cell(row=r, column=ratio_idx).number_format = '+0.0"%" ;-0.0"%" ;0.0"%"'
 
             far_idx = col_name_to_idx.get(far_col)
             if far_idx is not None:
@@ -1141,7 +1141,8 @@ def save_output(df: pd.DataFrame, query: str, output_dir: str = "./output") -> P
                     cell.hyperlink = url
                     cell.style = "Hyperlink"
 
-            # Highlight rows where undervalue ratio is <= 100%.
+            # Highlight rows where 0% < original ratio <= 100%.
+            # Since displayed value is gap(%) = ratio - 100, this means -100 < gap <= 0.
             undervalue_idx = col_name_to_idx.get(COL_UNDERVALUE_RATIO)
             cond_fill = PatternFill(fill_type="solid", fgColor="DCE6F1")
             cond_font = Font(bold=True)
@@ -1150,7 +1151,7 @@ def save_output(df: pd.DataFrame, query: str, output_dir: str = "./output") -> P
                     undervalue_val = _to_float(ws.cell(row=r, column=undervalue_idx).value)
                     if undervalue_val is None:
                         continue
-                    if 0.0 < undervalue_val <= 100.0:
+                    if -100.0 < undervalue_val <= 0.0:
                         for c in range(1, len(df.columns) + 1):
                             cell = ws.cell(row=r, column=c)
                             cell.fill = cond_fill

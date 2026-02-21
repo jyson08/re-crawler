@@ -237,7 +237,9 @@ def _fmt_ratio(v) -> str | None:
     n = _to_float_safe(v)
     if n is None:
         return None
-    return f"{n:.1f}%"
+    if abs(n - round(n)) < 1e-9:
+        return f"{int(round(n)):+d}%"
+    return f"{n:+.1f}%"
 
 
 def _fmt_far(v) -> str | None:
@@ -298,7 +300,7 @@ def _styled_result_df(df):
         ratio = _to_float_safe(raw_df.at[row.name, ratio_col]) if row.name in raw_df.index else None
         if ratio is None:
             return [""] * len(display_df.columns)
-        if 0.0 < ratio <= 100.0:
+        if -100.0 < ratio <= 0.0:
             return ["background-color: #DCE6F1; font-weight: 700"] * len(display_df.columns)
         return [""] * len(display_df.columns)
 
