@@ -185,6 +185,7 @@ def main() -> None:
         preview_clicked = st.button("후보 조회", type="primary")
     if "has_result" not in st.session_state:
         st.session_state["has_result"] = False
+    has_preview_api = hasattr(ae, "preview_candidates")
 
     def _on_progress(event: dict) -> None:
         if event.get("event") == "prepare":
@@ -225,15 +226,43 @@ def main() -> None:
             try:
                 progress_bar.progress(3, text="단지 인덱스 캐시 확인 중...")
                 index_items = _cached_kb_index()
-                preview_df, preview_markers_df, candidate_ids, _selected = ae.preview_candidates(
-                    raw_query=query.strip(),
-                    radius_m=float(radius_m),
-                    min_households=int(min_households),
-                    fast_mode=True,
-                    max_dong_codes=None,
-                    index_items=index_items,
-                    preferred_dong=(dong.strip() if dong.strip() else None),
-                )
+                if has_preview_api:
+                    preview_df, preview_markers_df, candidate_ids, _selected = ae.preview_candidates(
+                        raw_query=query.strip(),
+                        radius_m=float(radius_m),
+                        min_households=int(min_households),
+                        fast_mode=True,
+                        max_dong_codes=None,
+                        index_items=index_items,
+                        preferred_dong=(dong.strip() if dong.strip() else None),
+                    )
+                else:
+                    # Backward-compatible fallback when older module is loaded on cloud.
+                    result_df, _selected_info, crawled_info, markers_df, _metrics = ae.collect_dataset(
+                        raw_query=query.strip(),
+                        radius_m=float(radius_m),
+                        min_households=int(min_households),
+                        fast_mode=True,
+                        max_dong_codes=None,
+                        index_items=index_items,
+                        preferred_dong=(dong.strip() if dong.strip() else None),
+                    )
+                    preview_df = (
+                        result_df[["단지"]]
+                        .drop_duplicates()
+                        .rename(columns={"단지": "단지명"})
+                        .reset_index(drop=True)
+                    )
+                    name_to_id = {
+                        str(r.get("complex_name")): int(r.get("complex_id"))
+                        for _, r in markers_df.iterrows()
+                        if r.get("complex_id") is not None
+                    }
+                    preview_df["complex_id"] = preview_df["단지명"].map(name_to_id)
+                    preview_df["수집"] = True
+                    preview_markers_df = markers_df
+                    candidate_ids = [int(v) for v in preview_df["complex_id"].dropna().tolist()]
+                    st.warning("미리보기 API 버전이 달라 기본 모드로 후보를 생성했습니다.")
             except ValueError as exc:
                 progress_bar.empty()
                 progress_text.empty()
@@ -243,7 +272,11 @@ def main() -> None:
         st.session_state["preview_ready"] = True
         st.session_state["preview_df"] = preview_df
         preview_select_df = preview_df.copy()
-        preview_select_df.insert(0, "수집", True)
+        if "수집" in preview_select_df.columns:
+            cols = ["수집"] + [c for c in preview_select_df.columns if c != "수집"]
+            preview_select_df = preview_select_df[cols]
+        else:
+            preview_select_df.insert(0, "수집", True)
         st.session_state["preview_select_df"] = preview_select_df
         st.session_state["preview_markers_df"] = preview_markers_df
         st.session_state["candidate_ids"] = candidate_ids
