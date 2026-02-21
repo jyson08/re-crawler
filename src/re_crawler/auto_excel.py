@@ -380,7 +380,7 @@ def fetch_kb_complex_payloads(session: requests.Session, complex_id: int) -> dic
 
 
 def fetch_kb_complex_main(session: requests.Session, complex_id: int) -> dict[str, Any] | None:
-    payload = _request_json_with_retry(session, _kb_endpoint("/land-complex/complex/main", complex_id), retries=2)
+    payload = _request_json_with_retry(session, _kb_endpoint("/land-complex/complex/main", complex_id), retries=4)
     if not payload:
         return None
     data = payload.get("dataBody", {}).get("data")
@@ -388,6 +388,29 @@ def fetch_kb_complex_main(session: requests.Session, complex_id: int) -> dict[st
         return None
     _delay()
     return data
+
+
+def get_main_with_fallback(
+    session: requests.Session,
+    complex_id: int,
+    main_cache: dict[int, dict[str, Any]] | None = None,
+    payload_cache: dict[int, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    if main_cache is not None and complex_id in main_cache:
+        return main_cache[complex_id]
+
+    main_data = fetch_kb_complex_main(session, complex_id) or {}
+    if not main_data and payload_cache is not None and complex_id in payload_cache:
+        cached_payload = payload_cache.get(complex_id) or {}
+        main_data = cached_payload.get("main") if isinstance(cached_payload.get("main"), dict) else {}
+    if not main_data:
+        payloads = fetch_kb_complex_payloads(session, complex_id)
+        if payload_cache is not None:
+            payload_cache[complex_id] = payloads
+        main_data = payloads.get("main") if isinstance(payloads.get("main"), dict) else {}
+    if main_cache is not None and main_data:
+        main_cache[complex_id] = main_data
+    return main_data or {}
 
 
 def _haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
@@ -424,9 +447,9 @@ def fetch_kb_dong_rows_in_region(
     sido_name: str,
     sigungu_name: str | None,
 ) -> list[dict[str, Any]]:
-    params: dict[str, str] = {"시도명": sido_name}
+    params: dict[str, str] = {"\uc2dc\ub3c4\uba85": sido_name}
     if sigungu_name:
-        params["시군구명"] = sigungu_name
+        params["\uc2dc\uad70\uad6c\uba85"] = sigungu_name
     url = "https://api.kbland.kr/land-complex/map/stutDongAreaNameList"
     payload = _request_json_with_retry(
         session,
@@ -458,13 +481,39 @@ def fetch_kb_dong_rows_in_region(
     return out_rows
 
 
+def _collect_dong_codes_from_index(
+    index_items: list[dict[str, Any]],
+    sido_name: str | None,
+    sigungu_name: str | None,
+) -> list[str]:
+    codes: list[str] = []
+    seen: set[str] = set()
+    for item in index_items:
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("\ubc95\uc815\ub3d9\ucf54\ub4dc") or "").strip()
+        addr = str(item.get("\uc8fc\uc18c") or "").strip()
+        if not code or not addr:
+            continue
+        if sido_name and not addr.startswith(sido_name):
+            continue
+        if sigungu_name and sigungu_name not in addr:
+            continue
+        if code in seen:
+            continue
+        seen.add(code)
+        codes.append(code)
+    return codes
+
+
 def fetch_kb_nearby_apartment_candidates(
     session: requests.Session,
     seed_candidate: KbComplexCandidate,
     seed_main: dict[str, Any],
     radius_m: float = 500.0,
     max_dong_codes: int | None = None,
-    adjacent_dong_extra_m: float = 3000.0,
+    adjacent_dong_extra_m: float = 0.0,
+    index_items: list[dict[str, Any]] | None = None,
 ) -> list[KbComplexCandidate]:
     dong_code = str(seed_main.get("법정동코드") or "").strip()
     seed_lat = _to_float(seed_main.get("wgs84위도"))
@@ -513,6 +562,12 @@ def fetch_kb_nearby_apartment_candidates(
     if dong_rows:
         # 정확도 우선: 시군구 내 동코드를 모두 탐색하고 실제 단지 좌표 거리로만 필터링
         dong_codes = [str(r.get("code") or "").strip() for r in dong_rows if str(r.get("code") or "").strip()]
+    if not dong_codes and index_items:
+        dong_codes = _collect_dong_codes_from_index(
+            index_items=index_items,
+            sido_name=sido_name,
+            sigungu_name=sigungu_name,
+        )
     if not dong_codes:
         dong_codes = [dong_code]
     if dong_code not in dong_codes:
@@ -1103,6 +1158,7 @@ def preview_candidates(
             seed_main=seed_main,
             radius_m=radius_m,
             max_dong_codes=max_dong_codes,
+            index_items=kb_index_items,
         )
         for cand in nearby:
             if cand.complex_id in processed_ids:
@@ -1110,9 +1166,11 @@ def preview_candidates(
             if cand.complex_id == seed.complex_id:
                 main_data = seed_main
             else:
-                main_data = fetch_kb_complex_main(session, cand.complex_id) or {}
+                main_data = get_main_with_fallback(session, cand.complex_id)
             households = _to_int(main_data.get("총세대수"))
-            if households is None or households < min_households:
+            # Keep unknown-household candidates in preview to avoid false negatives
+            # from transient API misses; strict filtering still applies when known.
+            if households is not None and households < min_households:
                 continue
 
             processed_ids.add(cand.complex_id)
@@ -1403,6 +1461,7 @@ def collect_dataset(
             seed_main=seed_main,
             radius_m=radius_m,
             max_dong_codes=max_dong_codes,
+            index_items=kb_index_items,
         )
         LOGGER.info(
             "Nearby apartment candidates within %.0fm from seed(id=%s): %d",
@@ -1422,12 +1481,15 @@ def collect_dataset(
             else:
                 main_data = main_cache.get(cand.complex_id)
                 if main_data is None:
-                    main_data = fetch_kb_complex_main(session, cand.complex_id) or {}
-                    if main_data:
-                        main_cache[cand.complex_id] = main_data
+                    main_data = get_main_with_fallback(
+                        session=session,
+                        complex_id=cand.complex_id,
+                        main_cache=main_cache,
+                        payload_cache=payload_cache,
+                    )
 
             households = _to_int(main_data.get("총세대수"))
-            if households is None or households < min_households:
+            if households is not None and households < min_households:
                 LOGGER.info(
                     "Skip complex by households threshold. id=%s name=%s households=%s threshold=%s",
                     cand.complex_id,
