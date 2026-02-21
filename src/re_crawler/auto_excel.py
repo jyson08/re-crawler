@@ -360,6 +360,7 @@ def fetch_kb_complex_payloads(session: requests.Session, complex_id: int) -> dic
     area_key = "\uba74\uc801\uc77c\ub828\ubc88\ud638"
     mpri_rows = out.get("mpri_by_type") if isinstance(out.get("mpri_by_type"), list) else []
     base_price_by_area: dict[int, dict[str, Any]] = {}
+    recent_deals_by_area: dict[int, list[dict[str, Any]]] = {}
     for row in mpri_rows:
         if not isinstance(row, dict):
             continue
@@ -375,7 +376,31 @@ def fetch_kb_complex_payloads(session: requests.Session, complex_id: int) -> dic
         if isinstance(data, dict):
             base_price_by_area[area_id] = data
         _delay()
+        # Pull detailed recent transaction list to support filtering (e.g. exclude 1st floor).
+        deal_params = {
+            "\ub2e8\uc9c0\uae30\ubcf8\uc77c\ub828\ubc88\ud638": complex_id,
+            "\uccab\ud398\uc774\uc9c0\uac2f\uc218": 30,
+            "\ud398\uc774\uc9c0\uac2f\uc218": 30,
+            "\ud604\uc7ac\ud398\uc774\uc9c0": 1,
+            "\uac70\ub798\uad6c\ubd84": 3,
+            "\uba74\uc801\uadf8\ub8f9\uc5ec\ubd80": 0,
+            "\uba74\uc801\uc77c\ub828\ubc88\ud638": area_id,
+        }
+        deal_url = requests.Request(
+            "GET",
+            f"{KB_API}/land-price/price/complex/preSalePrices",
+            params=deal_params,
+        ).prepare().url or ""
+        deal_payload = _request_json_with_retry(session, deal_url, retries=2)
+        if deal_payload:
+            deal_data = deal_payload.get("dataBody", {}).get("data")
+            if isinstance(deal_data, dict):
+                rows = deal_data.get("dataList")
+                if isinstance(rows, list):
+                    recent_deals_by_area[area_id] = [r for r in rows if isinstance(r, dict)]
+        _delay()
     out["base_price_by_area"] = base_price_by_area
+    out["recent_deals_by_area"] = recent_deals_by_area
     return out
 
 
@@ -717,12 +742,68 @@ def _format_date_floor(contract_yyyymmdd: Any, floor: Any) -> str | None:
     return date_text or floor_text
 
 
+def _parse_floor_number(floor: Any) -> int | None:
+    text = str(floor or "").strip()
+    if not text:
+        return None
+    nums = re.findall(r"-?\d+", text)
+    if not nums:
+        return None
+    try:
+        # Use the last number so values like "607/5층" resolve to 5.
+        return int(nums[-1])
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _pick_recent_trade_from_rows(
+    rows: list[dict[str, Any]],
+    trade_name: str,
+) -> tuple[int | None, str | None]:
+    date_key = "\uacc4\uc57d\ub144\uc6d4\uc77c"
+    name_key = "\ubb3c\uac74\uac70\ub798\uba85"
+    cancel_key = "\uacc4\uc57d\ucde8\uc18c\uc5ec\ubd80"
+    floor_key = "\ud574\ub2f9\uce35\uc218"
+    sale_price_key = "\ub9e4\ub9e4\uc2e4\uac70\ub798\uae08\uc561"
+    lease_price_key = "\uc804\uc138\uc2e4\uac70\ub798\uae08\uc561"
+
+    candidates: list[tuple[str, int | None, int]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get(cancel_key) or "0") == "1":
+            continue
+        if str(row.get(name_key) or "").strip() != trade_name:
+            continue
+        floor_no = _parse_floor_number(row.get(floor_key))
+        if floor_no == 1:
+            continue
+        if trade_name == "\ub9e4\ub9e4":
+            price = _to_int(row.get(sale_price_key))
+        else:
+            price = _to_int(row.get(lease_price_key))
+        if price is None:
+            continue
+        raw_date = str(row.get(date_key) or "").strip()
+        if not (len(raw_date) == 8 and raw_date.isdigit()):
+            raw_date = "00000000"
+        candidates.append((raw_date, floor_no, price))
+
+    if not candidates:
+        return None, None
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    best_date, best_floor, best_price = candidates[0]
+    floor_text = f"{best_floor}\uce35" if best_floor is not None else None
+    return best_price, _format_date_floor(best_date, floor_text)
+
+
 def build_dataframe_from_kb(query: str, candidate: KbComplexCandidate, payloads: dict[str, Any]) -> pd.DataFrame:
     info = payloads.get("info") if isinstance(payloads.get("info"), dict) else {}
     main = payloads.get("main") if isinstance(payloads.get("main"), dict) else {}
     typ_rows = payloads.get("typ_info") if isinstance(payloads.get("typ_info"), list) else []
     mpri_rows = payloads.get("mpri_by_type") if isinstance(payloads.get("mpri_by_type"), list) else []
     base_price_by_area = payloads.get("base_price_by_area") if isinstance(payloads.get("base_price_by_area"), dict) else {}
+    recent_deals_by_area = payloads.get("recent_deals_by_area") if isinstance(payloads.get("recent_deals_by_area"), dict) else {}
     school_rows = payloads.get("school_elem") if isinstance(payloads.get("school_elem"), list) else []
 
     complex_name = str(main.get("단지명") or info.get("단지명") or candidate.name or query)
@@ -797,17 +878,35 @@ def build_dataframe_from_kb(query: str, candidate: KbComplexCandidate, payloads:
         recent_sale_price = None
         recent_sale_date_floor = None
         recent_lease_price = None
+        recent_rows = recent_deals_by_area.get(area_id, []) if area_id is not None else []
+        if isinstance(recent_rows, list) and recent_rows:
+            recent_sale_price, recent_sale_date_floor = _pick_recent_trade_from_rows(
+                recent_rows,
+                trade_name="\ub9e4\ub9e4",
+            )
+            recent_lease_price, _ = _pick_recent_trade_from_rows(
+                recent_rows,
+                trade_name="\uc804\uc138",
+            )
+
+        # Fallback to base snapshot when detailed transaction rows are missing.
         if isinstance(base_data, dict):
-            recent_obj = base_data.get("\ucd5c\uadfc\uc2e4\uac70\ub798\uac00")
-            if isinstance(recent_obj, dict):
-                recent_sale_price = _to_int(recent_obj.get("\uac70\ub798\uae08\uc561"))
-                recent_sale_date_floor = _format_date_floor(
-                    recent_obj.get("\uacc4\uc57d\ub144\uc6d4\uc77c"),
-                    recent_obj.get("\uac70\ub798\uce35"),
-                )
-            sise_rows = base_data.get("\uc2dc\uc138")
-            if isinstance(sise_rows, list) and sise_rows and isinstance(sise_rows[0], dict):
-                recent_lease_price = _to_int(sise_rows[0].get("\uc804\uc138\uac70\ub798\uae08\uc561"))
+            if recent_sale_price is None:
+                recent_obj = base_data.get("\ucd5c\uadfc\uc2e4\uac70\ub798\uac00")
+                if isinstance(recent_obj, dict):
+                    recent_sale_floor = _parse_floor_number(recent_obj.get("\uac70\ub798\uce35"))
+                    if recent_sale_floor != 1:
+                        recent_sale_price = _to_int(recent_obj.get("\uac70\ub798\uae08\uc561"))
+                        recent_sale_date_floor = _format_date_floor(
+                            recent_obj.get("\uacc4\uc57d\ub144\uc6d4\uc77c"),
+                            recent_sale_floor,
+                        )
+            if recent_lease_price is None:
+                sise_rows = base_data.get("\uc2dc\uc138")
+                if isinstance(sise_rows, list) and sise_rows and isinstance(sise_rows[0], dict):
+                    recent_lease_floor = _parse_floor_number(sise_rows[0].get("\uc804\uc138\ud574\ub2f9\uce35\uc218"))
+                    if recent_lease_floor != 1:
+                        recent_lease_price = _to_int(sise_rows[0].get("\uc804\uc138\uac70\ub798\uae08\uc561"))
 
         sale_count = _to_int(m.get("\ub9e4\ub9e4\uac74\uc218")) or 0
         lease_count = _to_int(m.get("\uc804\uc138\uac74\uc218")) or 0
