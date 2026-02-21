@@ -41,6 +41,7 @@ COL_BATH = "\ud654\uc7a5\uc2e4\uac2f\uc218"
 COL_RECENT_SALE = "\ucd5c\uadfc\uc2e4\uac70\ub798\uac00(\ub9e4\ub9e4)"
 COL_RECENT_SALE_DATE_FLOOR = "\ub0a0\uc9dc/\uce35"
 COL_SALE = "KB\uc2dc\uc138"
+COL_MIN_ASK_SALE = "\ucd5c\uc800\ub9e4\ubb3c\uac00(\ub9e4\ub9e4)"
 COL_UNDERVALUE_RATIO = "\uc800\ud3c9\uac00%"
 COL_RECENT_LEASE = "\ucd5c\uadfc\uc2e4\uac70\ub798\uac00(\uc804\uc138)"
 COL_LEASE = "KB\uc804\uc138"
@@ -72,6 +73,7 @@ OUTPUT_COLUMNS = [
     COL_RECENT_SALE,
     COL_RECENT_SALE_DATE_FLOOR,
     COL_SALE,
+    COL_MIN_ASK_SALE,
     COL_UNDERVALUE_RATIO,
     COL_RECENT_LEASE,
     COL_LEASE,
@@ -865,8 +867,9 @@ def build_dataframe_from_kb(query: str, candidate: KbComplexCandidate, payloads:
             continue
 
         sale = _to_int(m.get("매매일반거래가"))
+        min_ask_sale = _to_int(m.get("매매하한가"))
         if sale is None:
-            low = _to_int(m.get("매매하한가"))
+            low = min_ask_sale
             high = _to_int(m.get("매매상한가"))
             if low is not None and high is not None:
                 sale = int(round((low + high) / 2))
@@ -935,6 +938,7 @@ def build_dataframe_from_kb(query: str, candidate: KbComplexCandidate, payloads:
                 COL_RECENT_SALE: recent_sale_price,
                 COL_RECENT_SALE_DATE_FLOOR: recent_sale_date_floor,
                 COL_SALE: sale,
+                COL_MIN_ASK_SALE: min_ask_sale,
                 COL_UNDERVALUE_RATIO: _calc_undervalue_ratio(recent_sale_price, sale),
                 COL_RECENT_LEASE: recent_lease_price,
                 COL_LEASE: lease,
@@ -986,6 +990,7 @@ def save_output(df: pd.DataFrame, query: str, output_dir: str = "./output") -> P
         COL_RECENT_SALE: "\uac00\uaca9",
         COL_RECENT_SALE_DATE_FLOOR: "\uac00\uaca9",
         COL_SALE: "\uac00\uaca9",
+        COL_MIN_ASK_SALE: "\uac00\uaca9",
         COL_UNDERVALUE_RATIO: "\uac00\uaca9",
         COL_RECENT_LEASE: "\uac00\uaca9",
         COL_LEASE: "\uac00\uaca9",
@@ -1038,7 +1043,7 @@ def save_output(df: pd.DataFrame, query: str, output_dir: str = "./output") -> P
                         ws.cell(row=r, column=c).fill = row_fill
 
             # Number formats
-            money_cols = {COL_RECENT_SALE, COL_SALE, COL_RECENT_LEASE, COL_LEASE}
+            money_cols = {COL_RECENT_SALE, COL_SALE, COL_MIN_ASK_SALE, COL_RECENT_LEASE, COL_LEASE}
             ratio_cols = {COL_UNDERVALUE_RATIO, COL_LEASE_RATIO}
             far_col = COL_FAR
             area_cols = {COL_SUPPLY, COL_PYUNG, COL_EXCLUSIVE}
