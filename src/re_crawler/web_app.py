@@ -12,7 +12,7 @@ SRC_DIR = Path(__file__).resolve().parents[1]
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from re_crawler.auto_excel import collect_dataset, save_output, split_queries
+from re_crawler.auto_excel import collect_dataset, create_kb_session, fetch_kb_complex_index, save_output, split_queries
 
 
 def _save_stem_from_query(raw_query: str) -> str:
@@ -20,6 +20,12 @@ def _save_stem_from_query(raw_query: str) -> str:
     if not queries:
         return "complex"
     return queries[0] if len(queries) == 1 else f"{queries[0]}_외{len(queries)-1}"
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_kb_index() -> list[dict]:
+    session = create_kb_session()
+    return fetch_kb_complex_index(session)
 
 
 def _build_label_text(row) -> str:
@@ -179,7 +185,17 @@ def main() -> None:
         st.session_state["has_result"] = False
 
     def _on_progress(event: dict) -> None:
-        if event.get("event") == "query_target_ready":
+        if event.get("event") == "prepare":
+            stage = event.get("stage")
+            msg = event.get("message") or "준비 중..."
+            if stage == "index_start":
+                progress_bar.progress(5, text=msg)
+            elif stage == "index_done":
+                progress_bar.progress(12, text=msg)
+            else:
+                progress_bar.progress(15, text=msg)
+            progress_text.caption(msg)
+        elif event.get("event") == "query_target_ready":
             total = int(event.get("total") or 0)
             q = event.get("query")
             progress_text.info(f"[{q}] 대상 단지 {total}개 확인")
@@ -205,6 +221,8 @@ def main() -> None:
         progress_text = st.empty()
         with st.spinner("데이터 수집 중입니다..."):
             try:
+                progress_bar.progress(3, text="단지 인덱스 캐시 확인 중...")
+                index_items = _cached_kb_index()
                 result_df, _selected_info, crawled_info, markers_df, _metrics = collect_dataset(
                     raw_query=query.strip(),
                     radius_m=float(radius_m),
@@ -212,6 +230,7 @@ def main() -> None:
                     progress_callback=_on_progress,
                     fast_mode=True,
                     max_dong_codes=8,
+                    index_items=index_items,
                 )
             except ValueError as exc:
                 progress_bar.empty()

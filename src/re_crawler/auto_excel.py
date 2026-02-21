@@ -1010,6 +1010,7 @@ def collect_dataset(
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
     fast_mode: bool = True,
     max_dong_codes: int | None = 8,
+    index_items: list[dict[str, Any]] | None = None,
 ) -> tuple[pd.DataFrame, list[tuple[str, KbComplexCandidate]], list[KbComplexCandidate], pd.DataFrame, list[QueryMetric]]:
     if fast_mode:
         set_delay_range(0.05, 0.15)
@@ -1021,9 +1022,19 @@ def collect_dataset(
         raise ValueError("단지명이 비어 있습니다.")
 
     session = create_kb_session()
-    kb_index_items = fetch_kb_complex_index(session)
+    if progress_callback:
+        progress_callback({"event": "prepare", "stage": "index_start", "message": "단지 인덱스 로딩 중..."})
+    kb_index_items = index_items if index_items is not None else fetch_kb_complex_index(session)
     if not kb_index_items:
         raise ValueError("KB 단지 인덱스를 불러오지 못했습니다.")
+    if progress_callback:
+        progress_callback(
+            {
+                "event": "prepare",
+                "stage": "index_done",
+                "message": f"단지 인덱스 로딩 완료 ({len(kb_index_items):,}건)",
+            }
+        )
 
     all_frames: list[pd.DataFrame] = []
     selected_info: list[tuple[str, KbComplexCandidate]] = []
@@ -1035,7 +1046,16 @@ def collect_dataset(
     main_cache: dict[int, dict[str, Any]] = {}
     payload_cache: dict[int, dict[str, Any]] = {}
 
-    for query in queries:
+    total_queries = len(queries)
+    for q_idx, query in enumerate(queries, start=1):
+        if progress_callback:
+            progress_callback(
+                {
+                    "event": "prepare",
+                    "stage": "query_start",
+                    "message": f"쿼리 준비 중 ({q_idx}/{total_queries}): {query}",
+                }
+            )
         query_started_at = datetime.now()
         attempted_complexes = 0
         success_complexes = 0
