@@ -490,31 +490,14 @@ def fetch_kb_nearby_apartment_candidates(
         )
     dong_codes: list[str] = []
     if dong_rows:
-        # 인접 동 포함: 동 중심좌표 기준으로 시드와 가까운 순으로 선택
-        prox_rows: list[tuple[float, str]] = []
-        for r in dong_rows:
-            lat = r.get("lat")
-            lng = r.get("lng")
-            code = str(r.get("code") or "").strip()
-            if not code:
-                continue
-            if lat is None or lng is None:
-                dist = float("inf")
-            else:
-                dist = _haversine_m(seed_lat, seed_lng, float(lat), float(lng))
-            prox_rows.append((dist, code))
-        prox_rows.sort(key=lambda x: x[0])
-        # 기본은 반경 + 버퍼(500m) 내 동을 포함
-        limit_dist = radius_m + 500.0
-        near_codes = [c for d, c in prox_rows if d <= limit_dist]
-        if not near_codes:
-            near_codes = [c for _, c in prox_rows[:8]]
-        dong_codes = near_codes
+        # 정확도 우선: 시군구 내 동코드를 모두 탐색하고 실제 단지 좌표 거리로만 필터링
+        dong_codes = [str(r.get("code") or "").strip() for r in dong_rows if str(r.get("code") or "").strip()]
     if not dong_codes:
         dong_codes = [dong_code]
     if dong_code not in dong_codes:
         dong_codes.insert(0, dong_code)
     if max_dong_codes is not None and max_dong_codes > 0 and len(dong_codes) > max_dong_codes:
+        # 속도 우선 모드에서만 제한
         dedup = []
         seen = set()
         for c in dong_codes:
@@ -1055,7 +1038,7 @@ def collect_dataset(
     min_households: int = 290,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
     fast_mode: bool = True,
-    max_dong_codes: int | None = 8,
+    max_dong_codes: int | None = None,
     index_items: list[dict[str, Any]] | None = None,
     preferred_dong: str | None = None,
 ) -> tuple[pd.DataFrame, list[tuple[str, KbComplexCandidate]], list[KbComplexCandidate], pd.DataFrame, list[QueryMetric]]:

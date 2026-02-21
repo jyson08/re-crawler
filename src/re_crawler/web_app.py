@@ -231,7 +231,7 @@ def main() -> None:
                     min_households=int(min_households),
                     progress_callback=_on_progress,
                     fast_mode=True,
-                    max_dong_codes=8,
+                    max_dong_codes=None,
                     index_items=index_items,
                     preferred_dong=(dong.strip() if dong.strip() else None),
                 )
