@@ -34,7 +34,7 @@ def _build_label_text(row) -> str:
     return f"{row['complex_name']}\n{built_text} | {hh_text}\n{parking_text} | {hall_text}"
 
 
-def _render_map(markers_df):
+def _render_map(markers_df, radius_m: float):
     if markers_df.empty:
         st.info("지도에 표시할 좌표 데이터가 없습니다.")
         return
@@ -49,6 +49,7 @@ def _render_map(markers_df):
     map_df = markers_df.copy()
     map_df["color"] = map_df["is_seed"].map(lambda x: [220, 53, 69, 180] if bool(x) else [52, 152, 219, 170])
     map_df["label_text"] = map_df.apply(_build_label_text, axis=1)
+    seed_df = map_df[map_df["is_seed"] == True].copy()
 
     marker_layer = pdk.Layer(
         "ScatterplotLayer",
@@ -58,16 +59,32 @@ def _render_map(markers_df):
         get_fill_color="color",
         pickable=True,
     )
+    radius_layer = pdk.Layer(
+        "ScatterplotLayer",
+        data=seed_df,
+        get_position="[lng, lat]",
+        get_radius=radius_m,
+        radius_units="meters",
+        filled=False,
+        stroked=True,
+        get_line_color=[220, 53, 69, 180],
+        line_width_min_pixels=2,
+        pickable=False,
+    )
     text_layer = pdk.Layer(
         "TextLayer",
         data=map_df,
         get_position="[lng, lat]",
         get_text="label_text",
         get_color=[33, 33, 33, 230],
-        get_size=12,
+        get_size=13,
+        size_units="pixels",
         get_text_anchor="start",
-        get_alignment_baseline="bottom",
-        get_pixel_offset=[10, 6],
+        get_alignment_baseline="top",
+        get_pixel_offset=[10, 10],
+        background=True,
+        get_background_color=[255, 255, 255, 210],
+        billboard=True,
         pickable=False,
     )
 
@@ -87,7 +104,7 @@ def _render_map(markers_df):
             map_provider="carto",
             map_style="light",
             initial_view_state=view,
-            layers=[marker_layer, text_layer],
+            layers=[radius_layer, marker_layer, text_layer],
             tooltip=tooltip,
         )
     )
@@ -103,17 +120,8 @@ def main() -> None:
         radius_m = st.number_input("반경(m)", min_value=100, max_value=5000, value=500, step=100)
         min_households = st.number_input("최소 세대수", min_value=1, max_value=10000, value=290, step=10)
         run_clicked = st.button("크롤링 실행", type="primary")
-
-    if not run_clicked:
-        st.caption("왼쪽에서 단지명과 옵션을 입력한 뒤 `크롤링 실행`을 누르세요.")
-        return
-
-    if not query.strip():
-        st.error("단지명을 입력해 주세요.")
-        return
-
-    progress_bar = st.progress(0, text="수집 준비 중...")
-    progress_text = st.empty()
+    if "has_result" not in st.session_state:
+        st.session_state["has_result"] = False
 
     def _on_progress(event: dict) -> None:
         if event.get("event") == "query_target_ready":
@@ -133,40 +141,62 @@ def main() -> None:
             progress_bar.progress(pct, text=f"[{q}] {current}/{total} 처리 중")
             progress_text.caption(f"현재 단지: {name}")
 
-    with st.spinner("데이터 수집 중입니다..."):
-        try:
-            result_df, _selected_info, crawled_info, markers_df, _metrics = collect_dataset(
-                raw_query=query.strip(),
-                radius_m=float(radius_m),
-                min_households=int(min_households),
-                progress_callback=_on_progress,
-                fast_mode=True,
-                max_dong_codes=8,
-            )
-        except ValueError as exc:
-            progress_bar.empty()
-            progress_text.empty()
-            st.error(str(exc))
+    if run_clicked:
+        if not query.strip():
+            st.error("단지명을 입력해 주세요.")
             return
-    progress_bar.progress(100, text="수집 완료")
 
-    st.success(f"수집 완료: {len(result_df)}행, 단지 {len(crawled_info)}개")
+        progress_bar = st.progress(0, text="수집 준비 중...")
+        progress_text = st.empty()
+        with st.spinner("데이터 수집 중입니다..."):
+            try:
+                result_df, _selected_info, crawled_info, markers_df, _metrics = collect_dataset(
+                    raw_query=query.strip(),
+                    radius_m=float(radius_m),
+                    min_households=int(min_households),
+                    progress_callback=_on_progress,
+                    fast_mode=True,
+                    max_dong_codes=8,
+                )
+            except ValueError as exc:
+                progress_bar.empty()
+                progress_text.empty()
+                st.error(str(exc))
+                return
+        progress_bar.progress(100, text="수집 완료")
+
+        save_stem = _save_stem_from_query(query.strip())
+        out_path = save_output(result_df, query=save_stem)
+        file_bytes = Path(out_path).read_bytes()
+        st.session_state["has_result"] = True
+        st.session_state["result_df"] = result_df
+        st.session_state["markers_df"] = markers_df
+        st.session_state["crawled_count"] = len(crawled_info)
+        st.session_state["download_bytes"] = file_bytes
+        st.session_state["download_name"] = Path(out_path).name
+        st.session_state["radius_m"] = float(radius_m)
+
+    if not st.session_state.get("has_result", False):
+        st.caption("왼쪽에서 단지명과 옵션을 입력한 뒤 `크롤링 실행`을 누르세요.")
+        return
+
+    result_df = st.session_state["result_df"]
+    markers_df = st.session_state["markers_df"]
+    crawled_count = st.session_state["crawled_count"]
+    st.success(f"수집 완료: {len(result_df)}행, 단지 {crawled_count}개")
 
     st.subheader("수집 결과")
     st.dataframe(result_df, use_container_width=True, hide_index=True)
 
-    save_stem = _save_stem_from_query(query.strip())
-    out_path = save_output(result_df, query=save_stem)
-    file_bytes = Path(out_path).read_bytes()
     st.download_button(
         label="엑셀 다운로드",
-        data=file_bytes,
-        file_name=Path(out_path).name,
+        data=st.session_state["download_bytes"],
+        file_name=st.session_state["download_name"],
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
     st.subheader("단지 위치 지도")
-    _render_map(markers_df)
+    _render_map(markers_df, radius_m=float(st.session_state.get("radius_m", radius_m)))
 
 
 if __name__ == "__main__":
