@@ -306,20 +306,23 @@ def main() -> None:
         return
 
     st.subheader("후보 단지 목록")
+    hidden_preview_cols = ["complex_id", "seed_query", "is_seed"]
+    preview_editor_df = st.session_state["preview_select_df"].drop(columns=hidden_preview_cols, errors="ignore")
     edited_preview_df = st.data_editor(
-        st.session_state["preview_select_df"],
+        preview_editor_df,
         use_container_width=True,
         hide_index=True,
         key="preview_editor",
         column_config={
             "수집": st.column_config.CheckboxColumn("수집", help="체크된 단지만 수집"),
         },
-        disabled=[c for c in st.session_state["preview_select_df"].columns if c != "수집"],
+        disabled=[c for c in preview_editor_df.columns if c != "수집"],
     )
-    st.session_state["preview_select_df"] = edited_preview_df
+    if "수집" in edited_preview_df.columns:
+        st.session_state["preview_select_df"].loc[edited_preview_df.index, "수집"] = edited_preview_df["수집"].astype(bool)
 
     selected_ids = (
-        edited_preview_df.loc[edited_preview_df["수집"] == True, "complex_id"]
+        st.session_state["preview_select_df"].loc[st.session_state["preview_select_df"]["수집"] == True, "complex_id"]
         .astype(int)
         .tolist()
     )
