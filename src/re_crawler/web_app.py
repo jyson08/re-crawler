@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
@@ -34,6 +35,19 @@ def _build_label_text(row) -> str:
     return f"{row['complex_name']}\n{built_text} | {hh_text}\n{parking_text} | {hall_text}"
 
 
+def _circle_polygon(lat: float, lng: float, radius_m: float, points: int = 72) -> list[list[float]]:
+    # Approximate geodesic circle around (lat, lng) in WGS84.
+    earth_r = 6378137.0
+    lat_rad = math.radians(lat)
+    out: list[list[float]] = []
+    for i in range(points):
+        theta = 2.0 * math.pi * i / points
+        dlat = (radius_m / earth_r) * math.sin(theta)
+        dlng = (radius_m / (earth_r * max(math.cos(lat_rad), 1e-8))) * math.cos(theta)
+        out.append([lng + math.degrees(dlng), lat + math.degrees(dlat)])
+    return out
+
+
 def _render_map(markers_df, radius_m: float):
     if markers_df.empty:
         st.info("지도에 표시할 좌표 데이터가 없습니다.")
@@ -50,6 +64,11 @@ def _render_map(markers_df, radius_m: float):
     map_df["color"] = map_df["is_seed"].map(lambda x: [220, 53, 69, 180] if bool(x) else [52, 152, 219, 170])
     map_df["label_text"] = map_df.apply(_build_label_text, axis=1)
     seed_df = map_df[map_df["is_seed"] == True].copy()
+    if not seed_df.empty:
+        seed_df["polygon"] = seed_df.apply(
+            lambda r: _circle_polygon(float(r["lat"]), float(r["lng"]), float(radius_m), points=90),
+            axis=1,
+        )
 
     marker_layer = pdk.Layer(
         "ScatterplotLayer",
@@ -60,15 +79,14 @@ def _render_map(markers_df, radius_m: float):
         pickable=True,
     )
     radius_layer = pdk.Layer(
-        "ScatterplotLayer",
+        "PolygonLayer",
         data=seed_df,
-        get_position="[lng, lat]",
-        get_radius=radius_m,
-        radius_units="meters",
-        filled=False,
-        stroked=True,
+        get_polygon="polygon",
+        get_fill_color=[220, 53, 69, 20],
         get_line_color=[220, 53, 69, 180],
-        line_width_min_pixels=2,
+        line_width_min_pixels=2.5,
+        stroked=True,
+        filled=True,
         pickable=False,
     )
     text_layer = pdk.Layer(
@@ -82,8 +100,6 @@ def _render_map(markers_df, radius_m: float):
         get_text_anchor="start",
         get_alignment_baseline="top",
         get_pixel_offset=[10, 10],
-        background=True,
-        get_background_color=[255, 255, 255, 210],
         billboard=True,
         pickable=False,
     )
