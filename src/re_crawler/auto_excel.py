@@ -363,6 +363,10 @@ def fetch_kb_complex_payloads(session: requests.Session, complex_id: int) -> dic
     mpri_rows = out.get("mpri_by_type") if isinstance(out.get("mpri_by_type"), list) else []
     base_price_by_area: dict[int, dict[str, Any]] = {}
     recent_deals_by_area: dict[int, list[dict[str, Any]]] = {}
+    pre_sale_chart_by_area: dict[int, dict[str, Any]] = {}
+    today = date.today()
+    end_ymd = today.strftime("%Y%m%d")
+    start_ymd = f"{today.year - 5}{today.strftime('%m%d')}"
     for row in mpri_rows:
         if not isinstance(row, dict):
             continue
@@ -401,8 +405,29 @@ def fetch_kb_complex_payloads(session: requests.Session, complex_id: int) -> dic
                 if isinstance(rows, list):
                     recent_deals_by_area[area_id] = [r for r in rows if isinstance(r, dict)]
         _delay()
+        chart_params = {
+            "\uac70\ub798\uad6c\ubd84": 0,
+            "\ub2e8\uc9c0\uae30\ubcf8\uc77c\ub828\ubc88\ud638": complex_id,
+            "\uc870\ud68c\uad6c\ubd84": 2,
+            "\uba74\uc801\uc77c\ub828\ubc88\ud638": area_id,
+            "\uba74\uc801\uadf8\ub8f9\uc5ec\ubd80": 0,
+            "\uc870\ud68c\uc2dc\uc791\uc77c": start_ymd,
+            "\uc870\ud68c\uc885\ub8cc\uc77c": end_ymd,
+        }
+        chart_url = requests.Request(
+            "GET",
+            f"{KB_API}/land-price/price/complex/preSaleChart",
+            params=chart_params,
+        ).prepare().url or ""
+        chart_payload = _request_json_with_retry(session, chart_url, retries=2)
+        if chart_payload:
+            chart_data = chart_payload.get("dataBody", {}).get("data")
+            if isinstance(chart_data, dict):
+                pre_sale_chart_by_area[area_id] = chart_data
+        _delay()
     out["base_price_by_area"] = base_price_by_area
     out["recent_deals_by_area"] = recent_deals_by_area
+    out["pre_sale_chart_by_area"] = pre_sale_chart_by_area
     return out
 
 
@@ -806,6 +831,7 @@ def build_dataframe_from_kb(query: str, candidate: KbComplexCandidate, payloads:
     mpri_rows = payloads.get("mpri_by_type") if isinstance(payloads.get("mpri_by_type"), list) else []
     base_price_by_area = payloads.get("base_price_by_area") if isinstance(payloads.get("base_price_by_area"), dict) else {}
     recent_deals_by_area = payloads.get("recent_deals_by_area") if isinstance(payloads.get("recent_deals_by_area"), dict) else {}
+    pre_sale_chart_by_area = payloads.get("pre_sale_chart_by_area") if isinstance(payloads.get("pre_sale_chart_by_area"), dict) else {}
     school_rows = payloads.get("school_elem") if isinstance(payloads.get("school_elem"), list) else []
 
     complex_name = str(main.get("단지명") or info.get("단지명") or candidate.name or query)
@@ -858,6 +884,7 @@ def build_dataframe_from_kb(query: str, candidate: KbComplexCandidate, payloads:
         area_id = _to_int(m.get("면적일련번호"))
         typ = typ_map.get(area_id, {})
         base_data = base_price_by_area.get(area_id, {})
+        chart_data = pre_sale_chart_by_area.get(area_id, {})
 
         supply_m2 = _round1(_to_float(m.get("공급면적")))
         exclusive_m2 = _round1(_to_float(m.get("전용면적")))
@@ -868,6 +895,9 @@ def build_dataframe_from_kb(query: str, candidate: KbComplexCandidate, payloads:
 
         sale = _to_int(m.get("매매일반거래가"))
         min_ask_sale = _to_int(m.get("매매하한가"))
+        chart_min_ask_sale = _to_int(chart_data.get("\ub9e4\ubb3c\ub9e4\ub9e4\ucd5c\uc800\uac00")) if isinstance(chart_data, dict) else None
+        if chart_min_ask_sale is not None:
+            min_ask_sale = chart_min_ask_sale
         if sale is None:
             low = min_ask_sale
             high = _to_int(m.get("매매상한가"))
