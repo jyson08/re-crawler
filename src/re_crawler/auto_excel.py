@@ -260,11 +260,16 @@ def select_best_candidate(query: str, candidates: list[KbComplexCandidate], auto
     return _prompt_candidate_selection(query, ranked[:10])
 
 
-def _request_json_with_retry(session: requests.Session, url: str, retries: int = 2) -> dict[str, Any] | None:
+def _request_json_with_retry(
+    session: requests.Session,
+    url: str,
+    retries: int = 2,
+    timeout_sec: int = 12,
+) -> dict[str, Any] | None:
     last_error: Exception | None = None
     for attempt in range(retries + 1):
         try:
-            resp = session.get(url, timeout=30)
+            resp = session.get(url, timeout=timeout_sec)
             if resp.status_code != 200:
                 LOGGER.warning("API status=%s url=%s", resp.status_code, url)
                 _delay()
@@ -436,7 +441,7 @@ def fetch_kb_complex_payloads(session: requests.Session, complex_id: int) -> dic
 
 
 def fetch_kb_complex_main(session: requests.Session, complex_id: int) -> dict[str, Any] | None:
-    payload = _request_json_with_retry(session, _kb_endpoint("/land-complex/complex/main", complex_id), retries=4)
+    payload = _request_json_with_retry(session, _kb_endpoint("/land-complex/complex/main", complex_id), retries=2)
     if not payload:
         return None
     data = payload.get("dataBody", {}).get("data")
@@ -451,6 +456,7 @@ def get_main_with_fallback(
     complex_id: int,
     main_cache: dict[int, dict[str, Any]] | None = None,
     payload_cache: dict[int, dict[str, Any]] | None = None,
+    allow_payload_fallback: bool = True,
 ) -> dict[str, Any]:
     if main_cache is not None and complex_id in main_cache:
         return main_cache[complex_id]
@@ -459,7 +465,7 @@ def get_main_with_fallback(
     if not main_data and payload_cache is not None and complex_id in payload_cache:
         cached_payload = payload_cache.get(complex_id) or {}
         main_data = cached_payload.get("main") if isinstance(cached_payload.get("main"), dict) else {}
-    if not main_data:
+    if not main_data and allow_payload_fallback:
         payloads = fetch_kb_complex_payloads(session, complex_id)
         if payload_cache is not None:
             payload_cache[complex_id] = payloads
@@ -869,9 +875,9 @@ def fetch_kb_nearby_apartment_candidates(
                 continue
 
             distance = _haversine_m(seed_lat, seed_lng, lat, lng)
-            row_dong_code = str(row.get("법정동코드") or "").strip()
-            limit_m = radius_m if row_dong_code == dong_code else (radius_m + max(0.0, adjacent_dong_extra_m))
-            if distance > limit_m:
+            # Final guard: candidates must always be within requested radius.
+            # Adjacent-dong expansion is only for search coverage, not radius relaxation.
+            if distance > radius_m:
                 continue
 
             name = str(row.get("단지명") or "").strip()
@@ -1504,6 +1510,8 @@ def preview_candidates(
     fast_mode: bool = True,
     max_dong_codes: int | None = None,
     index_items: list[dict[str, Any]] | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    max_preview_candidates: int | None = 70,
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[int], list[tuple[str, KbComplexCandidate]]]:
     if fast_mode:
         set_delay_range(0.05, 0.15)
@@ -1522,10 +1530,13 @@ def preview_candidates(
     selected_info: list[tuple[str, KbComplexCandidate]] = []
     processed_ids: set[int] = set()
     marker_ids: set[int] = set()
+    main_cache: dict[int, dict[str, Any]] = {}
     preview_rows: list[dict[str, Any]] = []
     marker_rows: list[dict[str, Any]] = []
 
     for query in queries:
+        if progress_callback:
+            progress_callback({"event": "prepare", "stage": "preview_seed", "message": f"[{query}] ?? ?? ?? ?..."})
         candidates = fetch_kb_complex_candidates(
             session,
             query=query,
@@ -1547,6 +1558,10 @@ def preview_candidates(
             max_dong_codes=max_dong_codes,
             index_items=kb_index_items,
         )
+        if max_preview_candidates is not None and max_preview_candidates > 0 and len(nearby) > max_preview_candidates:
+            nearby = nearby[:max_preview_candidates]
+        if progress_callback:
+            progress_callback({"event": "query_target_ready", "query": query, "current": 0, "total": len(nearby)})
         # Always keep seed marker for map center/radius rendering.
         seed_marker = _extract_marker_row(
             cand=seed,
@@ -1557,17 +1572,21 @@ def preview_candidates(
         if seed_marker and seed.complex_id not in marker_ids:
             marker_ids.add(seed.complex_id)
             marker_rows.append(seed_marker)
-        for cand in nearby:
+        for idx, cand in enumerate(nearby, start=1):
             if cand.complex_id in processed_ids:
+                if progress_callback:
+                    progress_callback({"event": "query_progress", "query": query, "current": idx, "total": len(nearby), "complex_name": cand.name, "success": True})
                 continue
             if cand.complex_id == seed.complex_id:
                 main_data = seed_main
             else:
-                main_data = get_main_with_fallback(session, cand.complex_id)
+                main_data = get_main_with_fallback(session, cand.complex_id, main_cache=main_cache, allow_payload_fallback=False)
             households = _to_int(main_data.get("총세대수"))
             # Keep unknown-household candidates in preview to avoid false negatives
             # from transient API misses; strict filtering still applies when known.
             if households is not None and households < min_households:
+                if progress_callback:
+                    progress_callback({"event": "query_progress", "query": query, "current": idx, "total": len(nearby), "complex_name": cand.name, "success": True})
                 continue
 
             processed_ids.add(cand.complex_id)
@@ -1607,6 +1626,8 @@ def preview_candidates(
             if marker and cand.complex_id not in marker_ids:
                 marker_ids.add(cand.complex_id)
                 marker_rows.append(marker)
+            if progress_callback:
+                progress_callback({"event": "query_progress", "query": query, "current": idx, "total": len(nearby), "complex_name": cand.name, "success": True})
 
     if not preview_rows:
         raise ValueError("조건에 맞는 후보 단지가 없습니다.")

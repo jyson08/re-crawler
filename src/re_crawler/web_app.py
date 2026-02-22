@@ -521,30 +521,33 @@ def main() -> None:
     def _on_progress(event: dict) -> None:
         if event.get("event") == "prepare":
             stage = event.get("stage")
-            msg = event.get("message") or "준비 중..."
+            msg = event.get("message") or "?? ?? ?..."
             if stage == "index_start":
                 progress_bar.progress(5, text=msg)
             elif stage == "index_done":
                 progress_bar.progress(12, text=msg)
+            elif stage == "preview_seed":
+                progress_bar.progress(20, text=msg)
             else:
                 progress_bar.progress(15, text=msg)
             progress_text.caption(msg)
         elif event.get("event") == "query_target_ready":
             total = int(event.get("total") or 0)
             q = event.get("query")
-            progress_text.info(f"[{q}] 대상 단지 {total}개 확인")
+            progress_text.info(f"[{q}] ?? ?? {total}? ??")
             if total <= 0:
-                progress_bar.progress(100, text=f"[{q}] 처리할 단지가 없습니다.")
+                progress_bar.progress(100, text=f"[{q}] ??? ??? ????.")
             else:
-                progress_bar.progress(0, text=f"[{q}] 0/{total} 처리 중")
+                progress_bar.progress(0, text=f"[{q}] 0/{total} ?? ?")
         elif event.get("event") == "query_progress":
             total = max(1, int(event.get("total") or 1))
             current = min(total, int(event.get("current") or 0))
             q = event.get("query")
             name = event.get("complex_name") or ""
             pct = int((current / total) * 100)
-            progress_bar.progress(pct, text=f"[{q}] {current}/{total} 처리 중")
-            progress_text.caption(f"현재 단지: {name}")
+            progress_bar.progress(pct, text=f"[{q}] {current}/{total} ?? ?")
+            if name:
+                progress_text.caption(f"?? ??: {name}")
 
     if preview_clicked:
         if not query.strip():
@@ -553,6 +556,7 @@ def main() -> None:
 
         progress_bar = st.progress(0, text="수집 준비 중...")
         progress_text = st.empty()
+        preview_started_at = __import__("time").perf_counter()
         with st.spinner("데이터 수집 중입니다..."):
             try:
                 progress_bar.progress(3, text="단지 인덱스 캐시 확인 중...")
@@ -563,9 +567,11 @@ def main() -> None:
                         radius_m=float(radius_m),
                         min_households=int(min_households),
                         fast_mode=True,
-                        max_dong_codes=None,
+                        max_dong_codes=80,
                         index_items=index_items,
                         preferred_dong=(dong.strip() if dong.strip() else None),
+                        progress_callback=_on_progress,
+                        max_preview_candidates=70,
                     )
                 else:
                     # Backward-compatible fallback when older module is loaded on cloud.
@@ -577,6 +583,7 @@ def main() -> None:
                         max_dong_codes=None,
                         index_items=index_items,
                         preferred_dong=(dong.strip() if dong.strip() else None),
+                        progress_callback=_on_progress,
                     )
                     preview_df = (
                         result_df[["단지"]]
@@ -599,7 +606,9 @@ def main() -> None:
                 progress_text.empty()
                 st.error(str(exc))
                 return
-        progress_bar.progress(100, text="후보 조회 완료")
+        preview_elapsed = __import__("time").perf_counter() - preview_started_at
+        progress_bar.progress(100, text=f"후보 조회 완료 ({preview_elapsed:.1f}s)")
+        progress_text.caption(f"후보 {len(candidate_ids)}개 확인, 소요 {preview_elapsed:.1f}s")
         st.session_state["preview_ready"] = True
         st.session_state["preview_df"] = preview_df
         preview_select_df = preview_df.copy()
