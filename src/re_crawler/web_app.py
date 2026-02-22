@@ -456,15 +456,17 @@ def _render_map(markers_df, radius_m: float):
         opacity=0.9,
     ).add_to(m)
 
+    # Put radius text near the top of the circle (avoid overlap with seed marker).
+    radius_label_lat = center_lat + (safe_radius / 111_000.0)
     radius_label_html = (
-        "<div style='font-size:12px;font-weight:700;color:#C0392B;"
-        "background:rgba(255,255,255,0.9);padding:1px 6px;border-radius:8px;'>"
-        f"?? {int(round(safe_radius))}m"
+        "<div style='font-size:11px;font-weight:700;color:#4A4A4A;"
+        "background:rgba(255,255,255,0.85);padding:0 4px;border-radius:6px;'>"
+        f"{int(round(safe_radius))}m"
         "</div>"
     )
     folium.Marker(
-        [center_lat, center_lng],
-        icon=DivIcon(html=radius_label_html, icon_size=(100, 18), icon_anchor=(20, -10)),
+        [radius_label_lat, center_lng],
+        icon=DivIcon(html=radius_label_html, icon_size=(48, 14), icon_anchor=(18, 10)),
     ).add_to(m)
 
     for _, row in map_df.iterrows():
@@ -498,15 +500,15 @@ def _render_map(markers_df, radius_m: float):
         ).add_to(m)
 
         label_html = (
-            "<div style='font-size:12px;font-weight:600;color:#1F2937;"
-            "background:rgba(255,255,255,0.88);padding:1px 6px;border:1px solid #D1D5DB;"
-            "border-radius:6px;white-space:nowrap;'>"
+            "<div style='font-size:11px;font-weight:600;color:#1F2937;"
+            "background:rgba(255,255,255,0.78);padding:0 4px;border:1px solid #E5E7EB;"
+            "border-radius:4px;line-height:1.2;white-space:nowrap;'>"
             f"{html.escape(name)}"
             "</div>"
         )
         folium.Marker(
             [lat, lng],
-            icon=DivIcon(html=label_html, icon_size=(220, 18), icon_anchor=(-6, -12)),
+            icon=DivIcon(html=label_html, icon_size=(120, 14), icon_anchor=(-4, -10)),
         ).add_to(m)
 
     components.html(m.get_root().render(), height=650, scrolling=False)
