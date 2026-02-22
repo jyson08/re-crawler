@@ -179,16 +179,8 @@ def _get_kb_index_resilient() -> list[dict]:
 
 
 def _build_label_text(row) -> str:
-    built = row.get("built_year")
-    hh = row.get("households")
-    parking = row.get("parking")
-    hall = row.get("hall_type")
-
-    built_text = f"준공:{built}" if built is not None else "준공:-"
-    hh_text = f"세대:{hh:,}" if isinstance(hh, (int, float)) else "세대:-"
-    parking_text = f"주차:{parking}" if parking else "주차:-"
-    hall_text = f"현관:{hall}" if hall else "현관:-"
-    return f"{row['complex_name']}\n{built_text} | {hh_text}\n{parking_text} | {hall_text}"
+    # Keep map labels short so they remain visible at most zoom levels.
+    return str(row.get("complex_name") or "")
 
 
 def _to_float_safe(v) -> float | None:
@@ -440,8 +432,14 @@ def _render_map(markers_df, radius_m: float):
         get_position="[lng, lat]",
         get_text="label_text",
         get_color=[33, 33, 33, 230],
-        get_size=13,
+        get_size=14,
         size_units="pixels",
+        size_min_pixels=11,
+        size_max_pixels=26,
+        background=True,
+        get_background_color=[255, 255, 255, 215],
+        get_border_color=[120, 120, 120, 180],
+        get_border_width=1,
         get_text_anchor="start",
         get_alignment_baseline="top",
         get_pixel_offset=[10, 10],
