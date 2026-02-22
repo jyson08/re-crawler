@@ -537,6 +537,103 @@ def fetch_kb_dong_rows_in_region(
     return out_rows
 
 
+def fetch_kb_dong_rows_by_bbox(
+    session: requests.Session,
+    center_lat: float,
+    center_lng: float,
+    radius_m: float,
+) -> list[dict[str, Any]]:
+    # Use area-name map API to resolve nearby legal dongs across sigungu boundaries.
+    lat_delta = max(0.003, radius_m / 111_000.0)
+    lng_delta = max(0.003, radius_m / max(111_000.0 * math.cos(math.radians(center_lat)), 1e-6))
+    params: dict[str, Any] = {
+        "selectCode": "1,2,3",
+        "zoomLevel": 17,
+        "startLat": center_lat - lat_delta,
+        "startLng": center_lng - lng_delta,
+        "endLat": center_lat + lat_delta,
+        "endLng": center_lng + lng_delta,
+        "\ubb3c\uac74\uc885\ub958": "01,05,41",
+        "\uac70\ub798\uc720\ud615": "1,2,3",
+        "\ub9e4\ub9e4\uc2dc\uc791\uac12": "",
+        "\ub9e4\ub9e4\uc885\ub8cc\uac12": "",
+        "\ubcf4\uc99d\uae08\uc2dc\uc791\uac12": "",
+        "\ubcf4\uc99d\uae08\uc885\ub8cc\uac12": "",
+        "\uc6d4\uc138\uc2dc\uc791\uac12": "",
+        "\uc6d4\uc138\uc885\ub8cc\uac12": "",
+        "\uba74\uc801\uc2dc\uc791\uac12": "",
+        "\uba74\uc801\uc885\ub8cc\uac12": "",
+        "\uc900\uacf5\ub144\ub3c4\uc2dc\uc791\uac12": "",
+        "\uc900\uacf5\ub144\ub3c4\uc885\ub8cc\uac12": "",
+        "\ubc29\uc218": "",
+        "\uc695\uc2e4\uc218": "",
+        "\uc138\ub300\uc218\uc2dc\uc791\uac12": "",
+        "\uc138\ub300\uc218\uc885\ub8cc\uac12": "",
+        "\uad00\ub9ac\ube44\uc2dc\uc791\uac12": "",
+        "\uad00\ub9ac\ube44\uc885\ub8cc\uac12": "",
+        "\uc6a9\uc801\ub960\uc2dc\uc791\uac12": "",
+        "\uc6a9\uc801\ub960\uc885\ub8cc\uac12": "",
+        "\uac74\ud3d0\uc728\uc2dc\uc791\uac12": "",
+        "\uac74\ud3d0\uc728\uc885\ub8cc\uac12": "",
+        "\uc804\uc138\uac00\uc728\uc2dc\uc791\uac12": "",
+        "\uc804\uc138\uac00\uc728\uc885\ub8cc\uac12": "",
+        "\ub9e4\ub9e4\uc804\uc138\ucc28\uc2dc\uc791\uac12": "",
+        "\ub9e4\ub9e4\uc804\uc138\ucc28\uc885\ub8cc\uac12": "",
+        "\uc6d4\uc138\uc218\uc775\ub960\uc2dc\uc791\uac12": "",
+        "\uc6d4\uc138\uc218\uc775\ub960\uc885\ub8cc\uac12": "",
+        "\uad6c\uc870": "",
+        "\uc8fc\ucc28": "",
+        "\uc5d8\ub9ac\ubca0\uc774\ud130": "",
+        "\ubcf4\uc548\uc635\uc158": "",
+        "\ub9e4\ubb3c": "",
+        "\uc735\uc790\uae08": "",
+        "\ubd84\uc591\ub2e8\uc9c0\uad6c\ubd84\ucf54\ub4dc": "C01",
+        "\uc77c\ubc18\ubd84\uc591\uc5ec\ubd80": "1,0",
+        "\ubd84\uc591\uc9c4\ud589\ub2e8\uacc4\ucf54\ub4dc": "S01,S11,S12",
+        "\uc635\uc158": "",
+        "\uc810\ud3ec\uc218\uc2dc\uc791\uac12": "",
+        "\uc810\ud3ec\uc218\uc885\ub8cc\uac12": "",
+        "\uc9c0\uc0c1\uce35": "",
+        "\uc9c0\ud558\uce35": "",
+        "\uc9c0\ubaa9": "",
+        "\uc6a9\ub3c4\uc9c0\uc5ed": "",
+        "\ucd94\uc9c4\ud604\ud669": "",
+        "webCheck": "Y",
+        "latitude": center_lat,
+        "longitude": center_lng,
+    }
+    url = requests.Request("GET", f"{KB_API}/land-complex/map/allAreaNameList", params=params).prepare().url
+    if not url:
+        return []
+    payload = _request_json_with_retry(session, url, retries=2)
+    if not payload:
+        return []
+    area = payload.get("dataBody", {}).get("data", {})
+    if not isinstance(area, dict):
+        return []
+    rows = area.get("\ubc95\uc815\ub3d9\ub9ac\uc2a4\ud2b8")
+    if not isinstance(rows, list):
+        return []
+    out_rows: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        code = str(row.get("\ubc95\uc815\ub3d9\ucf54\ub4dc") or "").strip()
+        lat = _to_float(row.get("wgs84\uc911\uc2ec\uc704\ub3c4"))
+        lng = _to_float(row.get("wgs84\uc911\uc2ec\uacbd\ub3c4"))
+        if not code:
+            continue
+        out_rows.append(
+            {
+                "code": code,
+                "name": str(row.get("\ubc95\uc815\ub3d9\uba85") or "").strip(),
+                "lat": lat,
+                "lng": lng,
+            }
+        )
+    return out_rows
+
+
 def _collect_dong_codes_from_index(
     index_items: list[dict[str, Any]],
     sido_name: str | None,
@@ -568,7 +665,7 @@ def fetch_kb_nearby_apartment_candidates(
     seed_main: dict[str, Any],
     radius_m: float = 500.0,
     max_dong_codes: int | None = None,
-    adjacent_dong_extra_m: float = 0.0,
+    adjacent_dong_extra_m: float = 1000.0,
     index_items: list[dict[str, Any]] | None = None,
 ) -> list[KbComplexCandidate]:
     dong_code = str(seed_main.get("법정동코드") or "").strip()
@@ -614,6 +711,28 @@ def fetch_kb_nearby_apartment_candidates(
             sido_name=sido_name,
             sigungu_name=sigungu_name,
         )
+        # Boundary-safe expansion: include nearby dongs from bbox area lookup
+        # so adjacent sigungu dongs (e.g. 아현동) are not missed.
+        wide_rows = fetch_kb_dong_rows_by_bbox(
+            session=session,
+            center_lat=seed_lat,
+            center_lng=seed_lng,
+            radius_m=radius_m + max(0.0, adjacent_dong_extra_m),
+        )
+        if wide_rows:
+            max_center_dist = radius_m + max(0.0, adjacent_dong_extra_m) + 1500.0
+            seen_codes = {str(r.get("code") or "").strip() for r in dong_rows}
+            for r in wide_rows:
+                code = str(r.get("code") or "").strip()
+                if not code or code in seen_codes:
+                    continue
+                lat = _to_float(r.get("lat"))
+                lng = _to_float(r.get("lng"))
+                if lat is None or lng is None:
+                    continue
+                if _haversine_m(seed_lat, seed_lng, lat, lng) <= max_center_dist:
+                    dong_rows.append(r)
+                    seen_codes.add(code)
     dong_codes: list[str] = []
     if dong_rows:
         # 정확도 우선: 시군구 내 동코드를 모두 탐색하고 실제 단지 좌표 거리로만 필터링
