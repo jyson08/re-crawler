@@ -521,7 +521,7 @@ def main() -> None:
     def _on_progress(event: dict) -> None:
         if event.get("event") == "prepare":
             stage = event.get("stage")
-            msg = event.get("message") or "?? ?? ?..."
+            msg = event.get("message") or "처리 준비 중..."
             if stage == "index_start":
                 progress_bar.progress(5, text=msg)
             elif stage == "index_done":
@@ -534,20 +534,20 @@ def main() -> None:
         elif event.get("event") == "query_target_ready":
             total = int(event.get("total") or 0)
             q = event.get("query")
-            progress_text.info(f"[{q}] ?? ?? {total}? ??")
+            progress_text.info(f"[{q}] 대상 후보 {total}개 확인")
             if total <= 0:
-                progress_bar.progress(100, text=f"[{q}] ??? ??? ????.")
+                progress_bar.progress(100, text=f"[{q}] 처리할 후보가 없습니다.")
             else:
-                progress_bar.progress(0, text=f"[{q}] 0/{total} ?? ?")
+                progress_bar.progress(0, text=f"[{q}] 0/{total} 처리 중")
         elif event.get("event") == "query_progress":
             total = max(1, int(event.get("total") or 1))
             current = min(total, int(event.get("current") or 0))
             q = event.get("query")
             name = event.get("complex_name") or ""
             pct = int((current / total) * 100)
-            progress_bar.progress(pct, text=f"[{q}] {current}/{total} ?? ?")
+            progress_bar.progress(pct, text=f"[{q}] {current}/{total} 처리 중")
             if name:
-                progress_text.caption(f"?? ??: {name}")
+                progress_text.caption(f"현재 단지: {name}")
 
     if preview_clicked:
         if not query.strip():

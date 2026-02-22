@@ -1655,7 +1655,7 @@ def preview_candidates(
 
     for query in queries:
         if progress_callback:
-            progress_callback({"event": "prepare", "stage": "preview_seed", "message": f"[{query}] ?? ?? ?? ?..."})
+            progress_callback({"event": "prepare", "stage": "preview_seed", "message": f"[{query}] 시드 단지 탐색 중..."})
         candidates = fetch_kb_complex_candidates(
             session,
             query=query,
