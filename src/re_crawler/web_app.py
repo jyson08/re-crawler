@@ -334,6 +334,43 @@ def _styled_result_df(df):
     return display_df.style.apply(_row_style, axis=1).apply(_cause_style, axis=1)
 
 
+def _enrich_marker_names(markers_df, preview_df):
+    if markers_df is None or getattr(markers_df, "empty", True):
+        return markers_df
+    if preview_df is None or getattr(preview_df, "empty", True):
+        return markers_df
+    if "complex_id" not in markers_df.columns or "complex_id" not in preview_df.columns:
+        return markers_df
+
+    # Find the most likely "complex name" column from preview table.
+    name_col = None
+    for c in ["단지명", "단지", "complex_name"]:
+        if c in preview_df.columns:
+            name_col = c
+            break
+    if name_col is None:
+        for c in preview_df.columns:
+            if c not in {"complex_id", "seed_query", "is_seed", "수집"}:
+                name_col = c
+                break
+    if name_col is None:
+        return markers_df
+
+    name_map = (
+        preview_df[["complex_id", name_col]]
+        .dropna(subset=["complex_id"])
+        .drop_duplicates(subset=["complex_id"], keep="first")
+        .set_index("complex_id")[name_col]
+        .to_dict()
+    )
+    out = markers_df.copy()
+    out["complex_name"] = out.apply(
+        lambda r: name_map.get(r.get("complex_id")) or r.get("complex_name"),
+        axis=1,
+    )
+    return out
+
+
 def _circle_polygon(lat: float, lng: float, radius_m: float, points: int = 72) -> list[list[float]]:
     # Approximate geodesic circle around (lat, lng) in WGS84.
     earth_r = 6378137.0
@@ -652,7 +689,11 @@ def main() -> None:
     st.caption(f"선택된 후보: {len(selected_ids)}개")
 
     st.subheader("후보 단지 지도")
-    _render_map(st.session_state["preview_markers_df"], radius_m=float(st.session_state.get("radius_m", radius_m)))
+    map_markers_df = _enrich_marker_names(
+        st.session_state["preview_markers_df"],
+        st.session_state.get("preview_select_df"),
+    )
+    _render_map(map_markers_df, radius_m=float(st.session_state.get("radius_m", radius_m)))
     _render_adsense_slot(ADSENSE_SLOT_MID, height=120)
 
     collect_clicked = st.button("수집하기")
