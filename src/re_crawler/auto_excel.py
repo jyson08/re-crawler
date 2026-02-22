@@ -144,7 +144,7 @@ def set_delay_range(min_sec: float, max_sec: float) -> None:
 
 
 def _normalize_text(text: str) -> str:
-    return re.sub(r"[^0-9a-z가-힣]", "", text.lower())
+    return re.sub(r"[^0-9a-z\uac00-\ud7a3]+", "", text.lower())
 
 
 def _similarity_score(query: str, target: str) -> float:
@@ -163,7 +163,7 @@ def _similarity_score(query: str, target: str) -> float:
 
 def _normalize_complex_name(text: str) -> str:
     n = _normalize_text(text)
-    for suffix in ("아파트", "apt"):
+    for suffix in ("\uc544\ud30c\ud2b8", "apt"):
         n = n.replace(suffix, "")
     return n
 
@@ -264,7 +264,7 @@ def _request_json_with_retry(
     session: requests.Session,
     url: str,
     retries: int = 2,
-    timeout_sec: int = 12,
+    timeout_sec: int = 20,
 ) -> dict[str, Any] | None:
     last_error: Exception | None = None
     for attempt in range(retries + 1):
@@ -441,7 +441,7 @@ def fetch_kb_complex_payloads(session: requests.Session, complex_id: int) -> dic
 
 
 def fetch_kb_complex_main(session: requests.Session, complex_id: int) -> dict[str, Any] | None:
-    payload = _request_json_with_retry(session, _kb_endpoint("/land-complex/complex/main", complex_id), retries=2)
+    payload = _request_json_with_retry(session, _kb_endpoint("/land-complex/complex/main", complex_id), retries=4)
     if not payload:
         return None
     data = payload.get("dataBody", {}).get("data")
@@ -754,6 +754,7 @@ def fetch_kb_nearby_apartment_candidates(
         str(seed_main.get("구주소") or "").strip()
         or str(seed_main.get("신주소") or "").strip()
         or str(seed_main.get("도로기본주소") or "").strip()
+        or str(seed_candidate.address or "").strip()
     )
     sido_name, sigungu_name = _extract_sido_sigungu(seed_addr)
     dong_rows: list[dict[str, Any]] = []
@@ -830,8 +831,101 @@ def fetch_kb_nearby_apartment_candidates(
                     seen_merged.add(c)
                     merged.append(c)
                 dong_codes = merged
+    # Boundary-name fallback: if seed dong has directional prefix (e.g. 북아현동),
+    # also include same base dong codes (e.g. 아현동) from index to avoid misses.
+    if index_items and seed_addr:
+        parts = re.sub(r"\s+", " ", seed_addr).strip().split(" ")
+        seed_dong_name = parts[2] if len(parts) > 2 else ""
+        dong_name_tokens: list[str] = []
+        if seed_dong_name:
+            dong_name_tokens.append(seed_dong_name)
+            if seed_dong_name.endswith("동") and len(seed_dong_name) >= 3 and seed_dong_name[0] in "남북동서":
+                dong_name_tokens.append(seed_dong_name[1:])
+        if dong_name_tokens:
+            prefix_chars = "\ub0a8\ubd81\ub3d9\uc11c"
+            base_codes: list[str] = []
+            seen_base: set[str] = set()
+            for item in index_items:
+                if not isinstance(item, dict):
+                    continue
+                code = str(item.get("\ubc95\uc815\ub3d9\ucf54\ub4dc") or "").strip()
+                addr = str(item.get("\uc8fc\uc18c") or "").strip()
+                if not code or not addr:
+                    continue
+                if sido_name and not addr.startswith(sido_name):
+                    continue
+                if not any(tok and tok in addr for tok in dong_name_tokens):
+                    continue
+                if code in seen_base:
+                    continue
+                seen_base.add(code)
+                base_codes.append(code)
+            if base_codes:
+                merged2: list[str] = []
+                seen_merged2: set[str] = set()
+                for c in dong_codes + base_codes:
+                    if c in seen_merged2:
+                        continue
+                    seen_merged2.add(c)
+                    merged2.append(c)
+                dong_codes = merged2
+    # Additional robust fallback from seed candidate address itself.
+    if index_items and seed_candidate.address:
+        cand_parts = re.sub(r"\s+", " ", str(seed_candidate.address)).strip().split(" ")
+        cand_sido = cand_parts[0] if len(cand_parts) > 0 else None
+        cand_dong = cand_parts[2] if len(cand_parts) > 2 else ""
+        cand_tokens: list[str] = []
+        if cand_dong:
+            cand_tokens.append(cand_dong)
+            if cand_dong.endswith("\ub3d9") and len(cand_dong) >= 3 and cand_dong[0] in "\ub0a8\ubd81\ub3d9\uc11c":
+                cand_tokens.append(cand_dong[1:])
+        if cand_tokens:
+            cand_codes: list[str] = []
+            seen_cand: set[str] = set()
+            for item in index_items:
+                if not isinstance(item, dict):
+                    continue
+                code = str(item.get("\ubc95\uc815\ub3d9\ucf54\ub4dc") or "").strip()
+                addr = str(item.get("\uc8fc\uc18c") or "").strip()
+                if not code or not addr:
+                    continue
+                if cand_sido and not addr.startswith(cand_sido):
+                    continue
+                if not any(tok and tok in addr for tok in cand_tokens):
+                    continue
+                if code in seen_cand:
+                    continue
+                seen_cand.add(code)
+                cand_codes.append(code)
+            if cand_codes:
+                merged3: list[str] = []
+                seen_merged3: set[str] = set()
+                for c in dong_codes + cand_codes:
+                    if c in seen_merged3:
+                        continue
+                    seen_merged3.add(c)
+                    merged3.append(c)
+                dong_codes = merged3
     if not dong_codes:
         dong_codes = [dong_code]
+    # Prioritize near-by dongs first so max_dong_codes truncation keeps
+    # adjacent-boundary dongs (e.g. 아현동) instead of far same-sigungu rows.
+    if dong_rows:
+        dist_map: dict[str, float] = {}
+        for r in dong_rows:
+            code = str(r.get("code") or "").strip()
+            if not code:
+                continue
+            lat = _to_float(r.get("lat"))
+            lng = _to_float(r.get("lng"))
+            if lat is None or lng is None:
+                d = float("inf")
+            else:
+                d = _haversine_m(seed_lat, seed_lng, lat, lng)
+            prev = dist_map.get(code)
+            if prev is None or d < prev:
+                dist_map[code] = d
+        dong_codes = sorted(dong_codes, key=lambda c: dist_map.get(c, float("inf")))
     if dong_code not in dong_codes:
         dong_codes.insert(0, dong_code)
     if max_dong_codes is not None and max_dong_codes > 0 and len(dong_codes) > max_dong_codes:
@@ -926,6 +1020,30 @@ def _to_float(value: Any) -> float | None:
         return float(str(value).replace(",", ""))
     except Exception:  # noqa: BLE001
         return None
+
+
+def _find_dict_value_by_key_tokens(data: dict[str, Any], tokens: list[str]) -> Any:
+    for k, v in data.items():
+        ks = str(k)
+        if all(tok in ks for tok in tokens):
+            return v
+    return None
+
+
+def _main_geo_dong_ok(main_data: dict[str, Any]) -> bool:
+    if not isinstance(main_data, dict) or not main_data:
+        return False
+    lat = _to_float(main_data.get("wgs84위도"))
+    lng = _to_float(main_data.get("wgs84경도"))
+    dong_code = str(main_data.get("법정동코드") or "").strip()
+    if lat is None:
+        lat = _to_float(_find_dict_value_by_key_tokens(main_data, ["wgs84", "위도"]))
+    if lng is None:
+        lng = _to_float(_find_dict_value_by_key_tokens(main_data, ["wgs84", "경도"]))
+    if not dong_code:
+        raw = _find_dict_value_by_key_tokens(main_data, ["법정동", "코드"])
+        dong_code = str(raw or "").strip()
+    return lat is not None and lng is not None and bool(dong_code)
 
 
 def _round1(value: float | None) -> float | None:
@@ -1531,6 +1649,7 @@ def preview_candidates(
     processed_ids: set[int] = set()
     marker_ids: set[int] = set()
     main_cache: dict[int, dict[str, Any]] = {}
+    payload_cache: dict[int, dict[str, Any]] = {}
     preview_rows: list[dict[str, Any]] = []
     marker_rows: list[dict[str, Any]] = []
 
@@ -1547,9 +1666,34 @@ def preview_candidates(
         if not candidates:
             continue
         seed = select_best_candidate(query, candidates)
+        # Seed must be robustly resolved because nearby expansion depends on
+        # seed lat/lng and legal-dong code.
+        seed_main = get_main_with_fallback(
+            session=session,
+            complex_id=seed.complex_id,
+            main_cache=main_cache,
+            payload_cache=payload_cache,
+            allow_payload_fallback=True,
+        )
+        if not _main_geo_dong_ok(seed_main):
+            seed_name_norm = _normalize_complex_name(seed.name)
+            for alt in candidates:
+                if alt.complex_id == seed.complex_id:
+                    continue
+                if _normalize_complex_name(alt.name) != seed_name_norm:
+                    continue
+                alt_main = get_main_with_fallback(
+                    session=session,
+                    complex_id=alt.complex_id,
+                    main_cache=main_cache,
+                    payload_cache=payload_cache,
+                    allow_payload_fallback=True,
+                )
+                if _main_geo_dong_ok(alt_main):
+                    seed = alt
+                    seed_main = alt_main
+                    break
         selected_info.append((query, seed))
-
-        seed_main = fetch_kb_complex_main(session, seed.complex_id) or {}
         nearby = fetch_kb_nearby_apartment_candidates(
             session=session,
             seed_candidate=seed,
@@ -1862,9 +2006,6 @@ def collect_dataset(
             continue
 
         seed = select_best_candidate(query, candidates)
-        seed_complex_id = seed.complex_id
-        seed_complex_name = seed.name
-        selected_info.append((query, seed))
         LOGGER.info("Selected seed candidate: id=%s name=%s score=%.1f", seed.complex_id, seed.name, seed.score)
 
         seed_payloads = payload_cache.get(seed.complex_id)
@@ -1872,6 +2013,27 @@ def collect_dataset(
             seed_payloads = fetch_kb_complex_payloads(session, seed.complex_id)
             payload_cache[seed.complex_id] = seed_payloads
         seed_main = seed_payloads.get("main") if isinstance(seed_payloads.get("main"), dict) else {}
+        if not _main_geo_dong_ok(seed_main):
+            seed_name_norm = _normalize_complex_name(seed.name)
+            for alt in candidates:
+                if alt.complex_id == seed.complex_id:
+                    continue
+                if _normalize_complex_name(alt.name) != seed_name_norm:
+                    continue
+                alt_payloads = payload_cache.get(alt.complex_id)
+                if alt_payloads is None:
+                    alt_payloads = fetch_kb_complex_payloads(session, alt.complex_id)
+                    payload_cache[alt.complex_id] = alt_payloads
+                alt_main = alt_payloads.get("main") if isinstance(alt_payloads.get("main"), dict) else {}
+                if _main_geo_dong_ok(alt_main):
+                    seed = alt
+                    seed_payloads = alt_payloads
+                    seed_main = alt_main
+                    break
+
+        seed_complex_id = seed.complex_id
+        seed_complex_name = seed.name
+        selected_info.append((query, seed))
         if seed_main:
             main_cache[seed.complex_id] = seed_main
         nearby_candidates = fetch_kb_nearby_apartment_candidates(
