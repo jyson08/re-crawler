@@ -394,6 +394,8 @@ def _render_map(markers_df, radius_m: float):
 
     map_df["color"] = map_df["is_seed"].map(lambda x: [220, 53, 69, 180] if x else [52, 152, 219, 170])
     map_df["label_text"] = map_df.apply(_build_label_text, axis=1)
+    # TextLayer needs an explicit character set for non-Latin labels.
+    label_charset = "".join(sorted(set("".join(map_df["label_text"].dropna().astype(str).tolist()))))
 
     seed_df = map_df[map_df["is_seed"] == True].copy()
     radius_dash_rows = []
@@ -430,12 +432,14 @@ def _render_map(markers_df, radius_m: float):
         "TextLayer",
         data=map_df,
         get_position="[lng, lat]",
-        get_text="complex_name",
+        get_text="label_text",
         get_color=[20, 20, 20, 255],
         get_size=15,
         size_units="pixels",
         size_min_pixels=12,
         size_max_pixels=24,
+        character_set=label_charset,
+        font_family="Malgun Gothic, Apple SD Gothic Neo, NanumGothic, sans-serif",
         get_text_anchor="'start'",
         get_alignment_baseline="'top'",
         get_pixel_offset=[10, 10],
