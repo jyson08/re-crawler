@@ -634,6 +634,52 @@ def fetch_kb_dong_rows_by_bbox(
     return out_rows
 
 
+def fetch_kb_sigungu_names_by_bbox(
+    session: requests.Session,
+    center_lat: float,
+    center_lng: float,
+    radius_m: float,
+) -> list[str]:
+    lat_delta = max(0.003, radius_m / 111_000.0)
+    lng_delta = max(0.003, radius_m / max(111_000.0 * math.cos(math.radians(center_lat)), 1e-6))
+    params: dict[str, Any] = {
+        "selectCode": "1,2,3",
+        "zoomLevel": 17,
+        "startLat": center_lat - lat_delta,
+        "startLng": center_lng - lng_delta,
+        "endLat": center_lat + lat_delta,
+        "endLng": center_lng + lng_delta,
+        "\ubb3c\uac74\uc885\ub958": "01,05,41",
+        "\uac70\ub798\uc720\ud615": "1,2,3",
+        "webCheck": "Y",
+        "latitude": center_lat,
+        "longitude": center_lng,
+    }
+    url = requests.Request("GET", f"{KB_API}/land-complex/map/allAreaNameList", params=params).prepare().url
+    if not url:
+        return []
+    payload = _request_json_with_retry(session, url, retries=2)
+    if not payload:
+        return []
+    area = payload.get("dataBody", {}).get("data", {})
+    if not isinstance(area, dict):
+        return []
+    rows = area.get("\uc2dc\uad70\uad6c\ub9ac\uc2a4\ud2b8")
+    if not isinstance(rows, list):
+        return []
+    names: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("\uc2dc\uad70\uad6c\uba85") or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+    return names
+
+
 def _collect_dong_codes_from_index(
     index_items: list[dict[str, Any]],
     sido_name: str | None,
@@ -665,7 +711,7 @@ def fetch_kb_nearby_apartment_candidates(
     seed_main: dict[str, Any],
     radius_m: float = 500.0,
     max_dong_codes: int | None = None,
-    adjacent_dong_extra_m: float = 1000.0,
+    adjacent_dong_extra_m: float = 2000.0,
     index_items: list[dict[str, Any]] | None = None,
 ) -> list[KbComplexCandidate]:
     dong_code = str(seed_main.get("법정동코드") or "").strip()
@@ -717,7 +763,7 @@ def fetch_kb_nearby_apartment_candidates(
             session=session,
             center_lat=seed_lat,
             center_lng=seed_lng,
-            radius_m=radius_m + max(0.0, adjacent_dong_extra_m),
+            radius_m=radius_m + max(0.0, adjacent_dong_extra_m) + 800.0,
         )
         if wide_rows:
             max_center_dist = radius_m + max(0.0, adjacent_dong_extra_m) + 1500.0
@@ -743,6 +789,41 @@ def fetch_kb_nearby_apartment_candidates(
             sido_name=sido_name,
             sigungu_name=sigungu_name,
         )
+    # Extra fallback for boundary areas: expand to nearby sigungu from bbox.
+    if index_items:
+        nearby_sigungu = fetch_kb_sigungu_names_by_bbox(
+            session=session,
+            center_lat=seed_lat,
+            center_lng=seed_lng,
+            radius_m=radius_m + max(0.0, adjacent_dong_extra_m) + 800.0,
+        )
+        if nearby_sigungu:
+            extra_codes: list[str] = []
+            seen_extra: set[str] = set()
+            for item in index_items:
+                if not isinstance(item, dict):
+                    continue
+                code = str(item.get("\ubc95\uc815\ub3d9\ucf54\ub4dc") or "").strip()
+                addr = str(item.get("\uc8fc\uc18c") or "").strip()
+                if not code or not addr:
+                    continue
+                if sido_name and not addr.startswith(sido_name):
+                    continue
+                if not any(sig in addr for sig in nearby_sigungu):
+                    continue
+                if code in seen_extra:
+                    continue
+                seen_extra.add(code)
+                extra_codes.append(code)
+            if extra_codes:
+                merged: list[str] = []
+                seen_merged: set[str] = set()
+                for c in dong_codes + extra_codes:
+                    if c in seen_merged:
+                        continue
+                    seen_merged.add(c)
+                    merged.append(c)
+                dong_codes = merged
     if not dong_codes:
         dong_codes = [dong_code]
     if dong_code not in dong_codes:
@@ -1440,6 +1521,7 @@ def preview_candidates(
 
     selected_info: list[tuple[str, KbComplexCandidate]] = []
     processed_ids: set[int] = set()
+    marker_ids: set[int] = set()
     preview_rows: list[dict[str, Any]] = []
     marker_rows: list[dict[str, Any]] = []
 
@@ -1465,6 +1547,16 @@ def preview_candidates(
             max_dong_codes=max_dong_codes,
             index_items=kb_index_items,
         )
+        # Always keep seed marker for map center/radius rendering.
+        seed_marker = _extract_marker_row(
+            cand=seed,
+            main_data=seed_main,
+            seed_query=query,
+            is_seed=True,
+        )
+        if seed_marker and seed.complex_id not in marker_ids:
+            marker_ids.add(seed.complex_id)
+            marker_rows.append(seed_marker)
         for cand in nearby:
             if cand.complex_id in processed_ids:
                 continue
@@ -1512,7 +1604,8 @@ def preview_candidates(
                 seed_query=query,
                 is_seed=(cand.complex_id == seed.complex_id),
             )
-            if marker:
+            if marker and cand.complex_id not in marker_ids:
+                marker_ids.add(cand.complex_id)
                 marker_rows.append(marker)
 
     if not preview_rows:

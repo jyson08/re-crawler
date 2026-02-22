@@ -195,9 +195,21 @@ def _to_float_safe(v) -> float | None:
     try:
         if v is None:
             return None
-        return float(str(v).replace("%", "").replace(",", "").strip())
+        n = float(str(v).replace("%", "").replace(",", "").strip())
+        if not math.isfinite(n):
+            return None
+        return n
     except Exception:
         return None
+
+
+def _to_bool_safe(v) -> bool:
+    if isinstance(v, bool):
+        return v
+    if v is None:
+        return False
+    s = str(v).strip().lower()
+    return s in {"1", "true", "t", "y", "yes"}
 
 
 def _to_int_safe(v) -> int | None:
@@ -366,27 +378,40 @@ def _circle_dashed_paths(
 
 def _render_map(markers_df, radius_m: float):
     if markers_df.empty:
-        st.info("지도에 표시할 좌표 데이터가 없습니다.")
+        st.info("\uc9c0\ub3c4\uc5d0 \ud45c\uc2dc\ud560 \uc88c\ud45c \ub370\uc774\ud130\uac00 \uc5c6\uc2b5\ub2c8\ub2e4.")
         return
 
+    map_df = markers_df.copy()
+    map_df["lat"] = map_df["lat"].map(_to_float_safe)
+    map_df["lng"] = map_df["lng"].map(_to_float_safe)
+    map_df = map_df.dropna(subset=["lat", "lng"]).copy()
+    if map_df.empty:
+        st.info("\uc9c0\ub3c4\uc5d0 \ud45c\uc2dc\ud560 \uc88c\ud45c \ub370\uc774\ud130\uac00 \uc5c6\uc2b5\ub2c8\ub2e4.")
+        return
+
+    map_df["is_seed"] = map_df["is_seed"].map(_to_bool_safe)
+    if not bool(map_df["is_seed"].any()):
+        map_df.loc[map_df.index[0], "is_seed"] = True
+
     view = pdk.ViewState(
-        latitude=float(markers_df["lat"].mean()),
-        longitude=float(markers_df["lng"].mean()),
+        latitude=float(map_df["lat"].mean()),
+        longitude=float(map_df["lng"].mean()),
         zoom=13,
         pitch=0,
     )
 
-    map_df = markers_df.copy()
-    map_df["color"] = map_df["is_seed"].map(lambda x: [220, 53, 69, 180] if bool(x) else [52, 152, 219, 170])
+    map_df["color"] = map_df["is_seed"].map(lambda x: [220, 53, 69, 180] if x else [52, 152, 219, 170])
     map_df["label_text"] = map_df.apply(_build_label_text, axis=1)
+
     seed_df = map_df[map_df["is_seed"] == True].copy()
     radius_dash_rows = []
+    safe_radius = max(1.0, float(radius_m))
     if not seed_df.empty:
         seed_df["radius_paths"] = seed_df.apply(
-            lambda r: _circle_dashed_paths(float(r["lat"]), float(r["lng"]), float(radius_m)),
+            lambda r: _circle_dashed_paths(float(r["lat"]), float(r["lng"]), safe_radius),
             axis=1,
         )
-        seed_df["radius_label"] = f"반경: {int(radius_m)}m"
+        seed_df["radius_label"] = f"\ubc18\uacbd: {int(round(safe_radius))}m"
         for _, row in seed_df.iterrows():
             for path in row["radius_paths"]:
                 radius_dash_rows.append({"path": path})
@@ -395,7 +420,7 @@ def _render_map(markers_df, radius_m: float):
         "ScatterplotLayer",
         data=map_df,
         get_position="[lng, lat]",
-        get_radius=28,
+        get_radius=22,
         get_fill_color="color",
         pickable=True,
     )
@@ -441,10 +466,10 @@ def _render_map(markers_df, radius_m: float):
     tooltip = {
         "html": (
             "<b>{complex_name}</b><br/>"
-            "준공년: {built_year}<br/>"
-            "세대수: {households}<br/>"
-            "주차대수: {parking}<br/>"
-            "현관구조: {hall_type}"
+            "\uc900\uacf5\ub144: {built_year}<br/>"
+            "\uc138\ub300\uc218: {households}<br/>"
+            "\uc8fc\ucc28\ub300\uc218: {parking}<br/>"
+            "\ud604\uad00\uad6c\uc870: {hall_type}"
         ),
         "style": {"backgroundColor": "white", "color": "black"},
     }
