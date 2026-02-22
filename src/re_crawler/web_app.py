@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import html
 import sys
 import inspect
 import os
@@ -407,7 +408,14 @@ def _circle_dashed_paths(
 
 def _render_map(markers_df, radius_m: float):
     if markers_df.empty:
-        st.info("\uc9c0\ub3c4\uc5d0 \ud45c\uc2dc\ud560 \uc88c\ud45c \ub370\uc774\ud130\uac00 \uc5c6\uc2b5\ub2c8\ub2e4.")
+        st.info("??? ??? ?? ???? ????.")
+        return
+
+    try:
+        import folium
+        from folium.features import DivIcon
+    except Exception:
+        st.error("?? ?? ??? ?? folium ??? ?????.")
         return
 
     map_df = markers_df.copy()
@@ -415,109 +423,93 @@ def _render_map(markers_df, radius_m: float):
     map_df["lng"] = map_df["lng"].map(_to_float_safe)
     map_df = map_df.dropna(subset=["lat", "lng"]).copy()
     if map_df.empty:
-        st.info("\uc9c0\ub3c4\uc5d0 \ud45c\uc2dc\ud560 \uc88c\ud45c \ub370\uc774\ud130\uac00 \uc5c6\uc2b5\ub2c8\ub2e4.")
+        st.info("??? ??? ?? ???? ????.")
         return
 
     map_df["is_seed"] = map_df["is_seed"].map(_to_bool_safe)
     if not bool(map_df["is_seed"].any()):
         map_df.loc[map_df.index[0], "is_seed"] = True
 
-    view = pdk.ViewState(
-        latitude=float(map_df["lat"].mean()),
-        longitude=float(map_df["lng"].mean()),
-        zoom=13,
-        pitch=0,
-    )
-
-    map_df["color"] = map_df["is_seed"].map(lambda x: [220, 53, 69, 180] if x else [52, 152, 219, 170])
-    map_df["label_text"] = map_df.apply(_build_label_text, axis=1)
-    # TextLayer needs an explicit character set for non-Latin labels.
-    label_charset = "".join(sorted(set("".join(map_df["label_text"].dropna().astype(str).tolist()))))
-
-    seed_df = map_df[map_df["is_seed"] == True].copy()
-    radius_dash_rows = []
-    safe_radius = max(1.0, float(radius_m))
+    seed_df = map_df[map_df["is_seed"] == True]
     if not seed_df.empty:
-        seed_df["radius_paths"] = seed_df.apply(
-            lambda r: _circle_dashed_paths(float(r["lat"]), float(r["lng"]), safe_radius),
-            axis=1,
+        center_lat = float(seed_df.iloc[0]["lat"])
+        center_lng = float(seed_df.iloc[0]["lng"])
+    else:
+        center_lat = float(map_df["lat"].mean())
+        center_lng = float(map_df["lng"].mean())
+
+    m = folium.Map(
+        location=[center_lat, center_lng],
+        zoom_start=15,
+        control_scale=True,
+        tiles="CartoDB positron",
+    )
+
+    safe_radius = max(1.0, float(radius_m))
+    folium.Circle(
+        location=[center_lat, center_lng],
+        radius=safe_radius,
+        color="#4A4A4A",
+        weight=2,
+        dash_array="8,8",
+        fill=False,
+        opacity=0.9,
+    ).add_to(m)
+
+    radius_label_html = (
+        "<div style='font-size:12px;font-weight:700;color:#C0392B;"
+        "background:rgba(255,255,255,0.9);padding:1px 6px;border-radius:8px;'>"
+        f"?? {int(round(safe_radius))}m"
+        "</div>"
+    )
+    folium.Marker(
+        [center_lat, center_lng],
+        icon=DivIcon(html=radius_label_html, icon_size=(100, 18), icon_anchor=(20, -10)),
+    ).add_to(m)
+
+    for _, row in map_df.iterrows():
+        lat = float(row["lat"])
+        lng = float(row["lng"])
+        is_seed = bool(row.get("is_seed"))
+        name = str(row.get("complex_name") or "")
+        built = row.get("built_year")
+        hh = row.get("households")
+        parking = row.get("parking")
+        hall = row.get("hall_type")
+
+        color = "#DC3545" if is_seed else "#3498DB"
+        tooltip_html = (
+            f"<b>{html.escape(name)}</b><br/>"
+            f"???: {html.escape(str(built) if built is not None else '-')}<br/>"
+            f"???: {html.escape(str(hh) if hh is not None else '-')}<br/>"
+            f"????: {html.escape(str(parking) if parking else '-')}<br/>"
+            f"????: {html.escape(str(hall) if hall else '-')}"
         )
-        seed_df["radius_label"] = f"\ubc18\uacbd: {int(round(safe_radius))}m"
-        for _, row in seed_df.iterrows():
-            for path in row["radius_paths"]:
-                radius_dash_rows.append({"path": path})
 
-    marker_layer = pdk.Layer(
-        "ScatterplotLayer",
-        data=map_df,
-        get_position="[lng, lat]",
-        get_radius=22,
-        get_fill_color="color",
-        pickable=True,
-    )
-    radius_layer = pdk.Layer(
-        "PathLayer",
-        data=radius_dash_rows,
-        get_path="path",
-        get_color=[70, 70, 70, 220],
-        get_width=2,
-        width_min_pixels=2,
-        rounded=True,
-        pickable=False,
-    )
-    text_layer = pdk.Layer(
-        "TextLayer",
-        data=map_df,
-        get_position="[lng, lat]",
-        get_text="label_text",
-        get_color=[20, 20, 20, 255],
-        get_size=15,
-        size_units="pixels",
-        size_min_pixels=12,
-        size_max_pixels=24,
-        character_set=label_charset,
-        font_family="Malgun Gothic, Apple SD Gothic Neo, NanumGothic, sans-serif",
-        get_text_anchor="'start'",
-        get_alignment_baseline="'top'",
-        get_pixel_offset=[10, 10],
-        billboard=True,
-        pickable=False,
-    )
-    radius_text_layer = pdk.Layer(
-        "TextLayer",
-        data=seed_df,
-        get_position="[lng, lat]",
-        get_text="radius_label",
-        get_color=[220, 53, 69, 230],
-        get_size=16,
-        size_units="pixels",
-        get_text_anchor="middle",
-        get_alignment_baseline="center",
-        get_pixel_offset=[0, -18],
-        billboard=True,
-        pickable=False,
-    )
+        folium.CircleMarker(
+            location=[lat, lng],
+            radius=8 if is_seed else 7,
+            color=color,
+            fill=True,
+            fill_color=color,
+            fill_opacity=0.85,
+            weight=1,
+            tooltip=folium.Tooltip(tooltip_html, sticky=True),
+        ).add_to(m)
 
-    tooltip = {
-        "html": (
-            "<b>{complex_name}</b><br/>"
-            "\uc900\uacf5\ub144: {built_year}<br/>"
-            "\uc138\ub300\uc218: {households}<br/>"
-            "\uc8fc\ucc28\ub300\uc218: {parking}<br/>"
-            "\ud604\uad00\uad6c\uc870: {hall_type}"
-        ),
-        "style": {"backgroundColor": "white", "color": "black"},
-    }
-
-    st.pydeck_chart(
-        pdk.Deck(
-            map_provider="carto",
-            map_style="light",
-            initial_view_state=view,
-            layers=[marker_layer, radius_layer, text_layer, radius_text_layer],
-            tooltip=tooltip,
+        label_html = (
+            "<div style='font-size:12px;font-weight:600;color:#1F2937;"
+            "background:rgba(255,255,255,0.88);padding:1px 6px;border:1px solid #D1D5DB;"
+            "border-radius:6px;white-space:nowrap;'>"
+            f"{html.escape(name)}"
+            "</div>"
         )
-    )
+        folium.Marker(
+            [lat, lng],
+            icon=DivIcon(html=label_html, icon_size=(220, 18), icon_anchor=(-6, -12)),
+        ).add_to(m)
+
+    components.html(m.get_root().render(), height=650, scrolling=False)
 
 
 def main() -> None:
