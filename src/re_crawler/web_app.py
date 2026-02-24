@@ -595,11 +595,7 @@ def main() -> None:
             st.caption("동명이인 단지가 많으면 동명을 먼저 입력하세요. 예: 응암동")
             seoul_names = st.session_state.get("seoul_apt_names") or _load_seoul_apt_name_cache()
             if not seoul_names:
-                st.caption("서울 아파트 자동완성 목록을 불러오려면 후보 조회를 한 번 실행하거나, 아래 버튼으로 갱신하세요.")
-            if st.button("서울 아파트 자동완성 목록 갱신", use_container_width=True):
-                idx_items = _get_kb_index_resilient()
-                seoul_names = _build_seoul_apt_name_catalog(idx_items)
-                _save_seoul_apt_name_cache(seoul_names)
+                seoul_names = _get_seoul_apt_name_catalog(_get_kb_index_resilient())
                 st.session_state["seoul_apt_names"] = seoul_names
             if seoul_names:
                 selected_name = st.selectbox(
@@ -677,7 +673,6 @@ def main() -> None:
             try:
                 progress_bar.progress(3, text="단지 인덱스 캐시 확인 중...")
                 index_items = _get_kb_index_resilient()
-                st.session_state["seoul_apt_names"] = _get_seoul_apt_name_catalog(index_items)
                 if has_preview_api:
                     preview_df, preview_markers_df, candidate_ids, _selected = ae.preview_candidates(
                         raw_query=query.strip(),
