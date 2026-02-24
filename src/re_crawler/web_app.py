@@ -188,6 +188,18 @@ def _apt_name_cache_file() -> Path:
 def _load_apt_name_cache() -> list[str]:
     p = _apt_name_cache_file()
     if not p.exists():
+        # Backward compatibility with older cache filename.
+        legacy = Path("./output/kb_seoul_apt_names.json")
+        if legacy.exists():
+            try:
+                legacy_data = json.loads(legacy.read_text(encoding="utf-8"))
+                if isinstance(legacy_data, list):
+                    migrated = [str(x).strip() for x in legacy_data if str(x).strip()]
+                    if migrated:
+                        _save_apt_name_cache(migrated)
+                        return migrated
+            except Exception:
+                pass
         return []
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
@@ -240,6 +252,10 @@ def _get_apt_name_catalog(index_items: list[dict] | None = None) -> list[str]:
     cached = _load_apt_name_cache()
     if cached:
         return cached
+    # If local index snapshot was not provided, use resilient index loader once.
+    # This keeps UX stable when output cache files are missing on fresh deployments.
+    if not index_items:
+        index_items = _get_kb_index_resilient()
     if not index_items:
         return []
     names = _build_apt_name_catalog(index_items)
