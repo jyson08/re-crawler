@@ -179,14 +179,14 @@ def _get_kb_index_resilient() -> list[dict]:
     return _load_kb_index_file_cache()
 
 
-def _seoul_apt_name_cache_file() -> Path:
-    p = Path("./output/kb_seoul_apt_names.json")
+def _apt_name_cache_file() -> Path:
+    p = Path("./output/kb_seoul_gyeonggi_apt_names.json")
     p.parent.mkdir(parents=True, exist_ok=True)
     return p
 
 
-def _load_seoul_apt_name_cache() -> list[str]:
-    p = _seoul_apt_name_cache_file()
+def _load_apt_name_cache() -> list[str]:
+    p = _apt_name_cache_file()
     if not p.exists():
         return []
     try:
@@ -203,8 +203,8 @@ def _load_seoul_apt_name_cache() -> list[str]:
     return out
 
 
-def _build_seoul_apt_name_catalog(index_items: list[dict]) -> list[str]:
-    # Index has mixed property types. Keep apartment-like names in Seoul only.
+def _build_apt_name_catalog(index_items: list[dict]) -> list[str]:
+    # Index has mixed property types. Keep apartment-like names in Seoul/Gyeonggi only.
     exclude_tokens = ["오피스텔", "도시형", "빌라", "연립", "다세대", "생활형숙박", "생활숙박"]
     names: list[str] = []
     seen: set[str] = set()
@@ -212,7 +212,7 @@ def _build_seoul_apt_name_catalog(index_items: list[dict]) -> list[str]:
         if not isinstance(item, dict):
             continue
         addr = str(item.get("주소") or "").strip()
-        if not addr.startswith("서울특별시"):
+        if not (addr.startswith("서울특별시") or addr.startswith("경기도")):
             continue
         name = str(item.get("단지명") or "").strip()
         if not name:
@@ -227,23 +227,23 @@ def _build_seoul_apt_name_catalog(index_items: list[dict]) -> list[str]:
     return names
 
 
-def _save_seoul_apt_name_cache(names: list[str]) -> None:
+def _save_apt_name_cache(names: list[str]) -> None:
     if not names:
         return
     try:
-        _seoul_apt_name_cache_file().write_text(json.dumps(names, ensure_ascii=False), encoding="utf-8")
+        _apt_name_cache_file().write_text(json.dumps(names, ensure_ascii=False), encoding="utf-8")
     except Exception:
         pass
 
 
-def _get_seoul_apt_name_catalog(index_items: list[dict] | None = None) -> list[str]:
-    cached = _load_seoul_apt_name_cache()
+def _get_apt_name_catalog(index_items: list[dict] | None = None) -> list[str]:
+    cached = _load_apt_name_cache()
     if cached:
         return cached
     if not index_items:
         return []
-    names = _build_seoul_apt_name_catalog(index_items)
-    _save_seoul_apt_name_cache(names)
+    names = _build_apt_name_catalog(index_items)
+    _save_apt_name_cache(names)
     return names
 
 
@@ -593,21 +593,32 @@ def main() -> None:
             st.subheader("수집 옵션")
             dong = st.text_input("동(읍/면/동)", value="")
             st.caption("동명이인 단지가 많으면 동명을 먼저 입력하세요. 예: 응암동")
-            seoul_names = st.session_state.get("seoul_apt_names") or _load_seoul_apt_name_cache()
-            if not seoul_names:
-                seoul_names = _get_seoul_apt_name_catalog(_get_kb_index_resilient())
-                st.session_state["seoul_apt_names"] = seoul_names
-            if seoul_names:
-                selected_name = st.selectbox(
-                    "단지명 자동완성(서울)",
-                    options=seoul_names,
-                    index=None,
-                    placeholder="검색/선택",
-                )
+            apt_names = st.session_state.get("apt_names") or _load_apt_name_cache()
+            if not apt_names:
+                # Offline-only build: use local KB index snapshot if present.
+                apt_names = _get_apt_name_catalog(_load_kb_index_file_cache())
+                st.session_state["apt_names"] = apt_names
+            if apt_names:
+                default_query = st.session_state.get("query_manual_default", "백련산SK뷰아이파크")
+                default_idx = apt_names.index(default_query) if default_query in apt_names else None
+                try:
+                    query = st.selectbox(
+                        "단지명",
+                        options=apt_names,
+                        index=default_idx,
+                        placeholder="검색/선택 또는 직접입력",
+                        accept_new_options=True,
+                    )
+                except TypeError:
+                    # Backward compatibility for older Streamlit versions.
+                    query = st.selectbox(
+                        "단지명",
+                        options=apt_names,
+                        index=default_idx if default_idx is not None else 0,
+                    )
             else:
-                selected_name = None
-            query_default = selected_name or st.session_state.get("query_manual_default", "백련산SK뷰아이파크")
-            query = st.text_input("단지명", value=query_default)
+                st.caption("자동완성 캐시가 없어 직접 입력 모드로 동작합니다.")
+                query = st.text_input("단지명", value=st.session_state.get("query_manual_default", "백련산SK뷰아이파크"))
             st.session_state["query_manual_default"] = query
             radius_m = st.number_input("반경(m)", min_value=100, max_value=5000, value=500, step=100)
             min_households = st.number_input("최소 세대수", min_value=1, max_value=10000, value=290, step=10)
