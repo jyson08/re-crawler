@@ -179,6 +179,74 @@ def _get_kb_index_resilient() -> list[dict]:
     return _load_kb_index_file_cache()
 
 
+def _seoul_apt_name_cache_file() -> Path:
+    p = Path("./output/kb_seoul_apt_names.json")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _load_seoul_apt_name_cache() -> list[str]:
+    p = _seoul_apt_name_cache_file()
+    if not p.exists():
+        return []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    out: list[str] = []
+    for x in data:
+        s = str(x or "").strip()
+        if s:
+            out.append(s)
+    return out
+
+
+def _build_seoul_apt_name_catalog(index_items: list[dict]) -> list[str]:
+    # Index has mixed property types. Keep apartment-like names in Seoul only.
+    exclude_tokens = ["오피스텔", "도시형", "빌라", "연립", "다세대", "생활형숙박", "생활숙박"]
+    names: list[str] = []
+    seen: set[str] = set()
+    for item in index_items:
+        if not isinstance(item, dict):
+            continue
+        addr = str(item.get("주소") or "").strip()
+        if not addr.startswith("서울특별시"):
+            continue
+        name = str(item.get("단지명") or "").strip()
+        if not name:
+            continue
+        if any(tok in name for tok in exclude_tokens):
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+    names.sort()
+    return names
+
+
+def _save_seoul_apt_name_cache(names: list[str]) -> None:
+    if not names:
+        return
+    try:
+        _seoul_apt_name_cache_file().write_text(json.dumps(names, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _get_seoul_apt_name_catalog(index_items: list[dict] | None = None) -> list[str]:
+    cached = _load_seoul_apt_name_cache()
+    if cached:
+        return cached
+    if not index_items:
+        return []
+    names = _build_seoul_apt_name_catalog(index_items)
+    _save_seoul_apt_name_cache(names)
+    return names
+
+
 def _build_label_text(row) -> str:
     # Keep map labels short so they remain visible at most zoom levels.
     return str(row.get("complex_name") or "")
@@ -525,7 +593,26 @@ def main() -> None:
             st.subheader("수집 옵션")
             dong = st.text_input("동(읍/면/동)", value="")
             st.caption("동명이인 단지가 많으면 동명을 먼저 입력하세요. 예: 응암동")
-            query = st.text_input("단지명", value="백련산SK뷰아이파크")
+            seoul_names = st.session_state.get("seoul_apt_names") or _load_seoul_apt_name_cache()
+            if not seoul_names:
+                st.caption("서울 아파트 자동완성 목록을 불러오려면 후보 조회를 한 번 실행하거나, 아래 버튼으로 갱신하세요.")
+            if st.button("서울 아파트 자동완성 목록 갱신", use_container_width=True):
+                idx_items = _get_kb_index_resilient()
+                seoul_names = _build_seoul_apt_name_catalog(idx_items)
+                _save_seoul_apt_name_cache(seoul_names)
+                st.session_state["seoul_apt_names"] = seoul_names
+            if seoul_names:
+                selected_name = st.selectbox(
+                    "단지명 자동완성(서울)",
+                    options=seoul_names,
+                    index=None,
+                    placeholder="검색/선택",
+                )
+            else:
+                selected_name = None
+            query_default = selected_name or st.session_state.get("query_manual_default", "백련산SK뷰아이파크")
+            query = st.text_input("단지명", value=query_default)
+            st.session_state["query_manual_default"] = query
             radius_m = st.number_input("반경(m)", min_value=100, max_value=5000, value=500, step=100)
             min_households = st.number_input("최소 세대수", min_value=1, max_value=10000, value=290, step=10)
             preview_clicked = st.button("후보 조회", type="primary")
@@ -590,6 +677,7 @@ def main() -> None:
             try:
                 progress_bar.progress(3, text="단지 인덱스 캐시 확인 중...")
                 index_items = _get_kb_index_resilient()
+                st.session_state["seoul_apt_names"] = _get_seoul_apt_name_catalog(index_items)
                 if has_preview_api:
                     preview_df, preview_markers_df, candidate_ids, _selected = ae.preview_candidates(
                         raw_query=query.strip(),
